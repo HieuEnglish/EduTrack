@@ -1,0 +1,157 @@
+use crate::services::hierarchy::{Database, DbState, YearPlanLesson};
+use crate::services::planning::year_plan_generator::get_year_plan_lessons;
+use crate::services::reports::report_generator::load_report;
+use rusqlite::params;
+use serde_json::json;
+use std::fs;
+use std::path::PathBuf;
+
+fn export_dir(state: &Database) -> Result<PathBuf, String> {
+    let dir = state.data_dir().join("exports");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+#[tauri::command]
+pub async fn export_year_plan_csv(
+    state: DbState<'_>,
+    year_plan_id: String,
+) -> Result<String, String> {
+    let dir = export_dir(&state)?;
+    let lessons: Vec<YearPlanLesson> = get_year_plan_lessons(state, year_plan_id.clone()).await?;
+    let mut csv = "date,weekday,sequence,title,objective,status,is_buffer\n".to_string();
+    for lesson in lessons {
+        csv.push_str(&format!(
+            "{},{},{},\"{}\",\"{}\",{},{}\n",
+            lesson.teaching_date,
+            lesson.weekday,
+            lesson.sequence_number,
+            lesson.lesson_title.replace('"', "\"\""),
+            lesson
+                .lesson_objective
+                .unwrap_or_default()
+                .replace('"', "\"\""),
+            lesson.status,
+            lesson.is_buffer
+        ));
+    }
+    let path = dir.join(format!("{year_plan_id}.csv"));
+    fs::write(&path, csv).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn export_student_report_txt(
+    state: DbState<'_>,
+    report_id: String,
+    include_teacher_advice: bool,
+) -> Result<String, String> {
+    let dir = export_dir(&state)?;
+    state.with_conn(|conn| {
+        let report = load_report(conn, &report_id)?;
+        let mut body = report.report_text;
+        if include_teacher_advice {
+            if let Some(advice) = report.teacher_advice_text {
+                body.push_str("\n\nTeacher advice\n");
+                body.push_str(&advice);
+            }
+        }
+        let path = dir.join(format!("{report_id}.txt"));
+        fs::write(&path, body).map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().to_string())
+    })
+}
+
+#[tauri::command]
+pub async fn export_school_data_json(
+    state: DbState<'_>,
+    school_id: String,
+    include_private_notes: bool,
+) -> Result<String, String> {
+    let dir = export_dir(&state)?;
+    state.with_conn(|conn| {
+        let schools: Vec<serde_json::Value> = query_json(
+            conn,
+            "SELECT id, name, country_code, region_code, timezone, academic_year_label FROM schools WHERE id = ?1",
+            &school_id,
+        )?;
+        let levels: Vec<serde_json::Value> = query_json(
+            conn,
+            "SELECT id, school_id, name, code, academic_year_start, academic_year_end, region_code, planning_status FROM levels WHERE school_id = ?1 AND archived_at IS NULL",
+            &school_id,
+        )?;
+        let classes: Vec<serde_json::Value> = query_json(
+            conn,
+            "SELECT id, school_id, level_id, name, subject_name, schedule_pattern_summary, year_plan_id FROM classes WHERE school_id = ?1 AND archived_at IS NULL",
+            &school_id,
+        )?;
+        let student_sql = if include_private_notes {
+            "SELECT id, class_id, school_id, level_id, full_name, preferred_name, student_code, notes_private FROM students WHERE school_id = ?1 AND archived_at IS NULL"
+        } else {
+            "SELECT id, class_id, school_id, level_id, full_name, preferred_name, student_code, NULL AS notes_private FROM students WHERE school_id = ?1 AND archived_at IS NULL"
+        };
+        let students = query_json(conn, student_sql, &school_id)?;
+        let payload = json!({
+            "exportType": "school_data",
+            "schoolId": school_id,
+            "includePrivateNotes": include_private_notes,
+            "schools": schools,
+            "levels": levels,
+            "classes": classes,
+            "students": students
+        });
+        let path = dir.join(format!("school-export-{}.json", payload["schoolId"].as_str().unwrap_or("school")));
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().to_string())
+    })
+}
+
+fn query_json(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    id: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let column_names: Vec<String> = stmt
+        .column_names()
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let rows = stmt
+        .query_map(params![id], |row| {
+            let mut object = serde_json::Map::new();
+            for (index, name) in column_names.iter().enumerate() {
+                let value: Option<String> = row.get(index)?;
+                object.insert(
+                    name.clone(),
+                    value.map_or(serde_json::Value::Null, serde_json::Value::String),
+                );
+            }
+            Ok(serde_json::Value::Object(object))
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::export_dir;
+    use crate::services::hierarchy::Database;
+    use std::sync::Arc;
+
+    #[test]
+    fn export_dir_resolved_via_data_dir() {
+        let tmp = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = Arc::new(Database::new(tmp.join("test.db"), tmp.join("data")).unwrap());
+        let dir = export_dir(db.as_ref()).unwrap();
+        assert!(dir.ends_with("exports"));
+        assert!(dir.exists());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+}

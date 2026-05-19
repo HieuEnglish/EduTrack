@@ -1,0 +1,226 @@
+{
+  "v": "1",
+  "objective": "Students will demonstrate mastery of previously taught writing concepts through engaging review activities, games, and collaborative exercises that reinforce key skills from Units 1-6.",
+  "transferGoal": "Students will independently apply writing strategies and conventions learned throughout the year to new contexts and unfamiliar prompts without scaffolding.",
+  "enduringUnderstanding": "Effective writing requires intentional planning, revision, and adaptation to audience and purpose; flexible practice strengthens long-term retention of writing skills.",
+  "essentialQuestions": [
+    "How do we choose the right writing strategy for different purposes?",
+    "What makes our writing clear and engaging for readers?",
+    "How can peer feedback help us improve our writing?",
+    "Which writing skills do we still need to strengthen?"
+  ],
+  "knowledge": [
+    "Students will know the key features of narrative, expository, and persuasive writing structures.",
+    "Students will know the steps of the writing process: prewriting, drafting, revising, editing, and publishing.",
+    "Students will know how to use transition words to connect ideas logically.",
+    "Students will know common grammar conventions including subject-verb agreement, punctuation, and sentence variety.",
+    "Students will know strategies for generating and organizing ideas before writing."
+  ],
+  "skills": [
+    "Students will be able to identify and apply appropriate text structures for different writing purposes.",
+    "Students will be able to revise drafts for clarity, coherence, and audience awareness.",
+    "Students will be able to provide constructive peer feedback using rubrics and checklists.",
+    "Students will be able to self-assess their writing strengths and areas for growth.",
+    "Students will be able to use graphic organizers to plan and structure their writing."
+  ],
+  "successCriteria": [
+    "I can identify the purpose and audience for a given writing task.",
+    "I can use a graphic organizer to plan my writing before drafting.",
+    "I can revise my work to improve clarity and organization.",
+    "I can give specific, helpful feedback to a peer's writing.",
+    "I can reflect on my progress and set a writing goal for improvement."
+  ],
+  "assessment": "Formative assessment through observation during games and activities, peer feedback quality checks, exit ticket responses, and student self-reflection journals. Teacher circulates with a checklist to track individual student progress on key writing skills from Units 1-6.",
+  "performanceTask": "Students participate in a Writing Skills Relay where teams rotate through stations reviewing different writing concepts (thesis statements, paragraph structure, transitions, editing). Each station requires teams to complete a task, earn points, and compile a final group reflection on which skills need the most practice.",
+  "materials": [
+    "Station task cards for Writing Skills Relay",
+    "Graphic organizers (story maps, outline templates, T-charts)",
+    "Peer review checklists and rubrics",
+    "Timer and scoreboard for team activities",
+    "Whiteboards and markers for quick writes",
+    "Exit ticket slips",
+    "Sample student writing excerpts for analysis",
+    "Reflection journals or half-sheet paper"
+  ],
+  "vocabulary": [
+    "thesis statement",
+    "topic sentence",
+    "supporting details",
+    "transitions",
+    "audience",
+    "purpose",
+    "revision",
+    "editing",
+    "coherence",
+    "text structure"
+  ],
+  "lessonFlow": [
+    {
+      "phase": "Hook and Warm-Up",
+      "time": "5 minutes",
+      "description": "Students play 'Writing Terminology Pictionary' in pairs. One student draws a writing term while the other guesses. Terms include thesis, topic sentence, transition, and audience. Quick energizer to activate prior knowledge."
+    },
+    {
+      "phase": "Activate Prior Knowledge",
+      "time": "5 minutes",
+      "description": "Think-Pair-Share: Students discuss what writing skill they feel most confident about and which one they still find challenging. Pairs share out, and teacher records responses on the board to guide flex-day focus."
+    },
+    {
+      "phase": "Explicit Teaching and Modeling",
+      "time": "5 minutes",
+      "description": "Teacher reviews the Writing Skills Relay stations, models how to complete one station task (analyzing a paragraph for strong topic sentences and supporting details), and explains expectations for collaboration and point earning."
+    },
+    {
+      "phase": "Guided Practice",
+      "time": "5 minutes",
+      "description": "Whole class completes the first station together. Teacher guides students through identifying the text structure, underlining transition words, and suggesting one revision. Students practice using the peer review checklist as a group."
+    },
+    {
+      "phase": "Collaborative Practice",
+      "time": "15 minutes",
+      "description": "Teams rotate through four Writing Skills Relay stations every 3-4 minutes: Station 1 - Thesis Statement Match (match prompts to strong thesis statements), Station 2 - Paragraph Puzzle (reorder jumbled sentences into coherent paragraphs), Station 3 - Transition Word Fill-In (complete sentences with appropriate transitions), Station 4 - Editing Challenge (find and correct errors in a short passage). Teams earn points for accuracy and teamwork."
+    },
+    {
+      "phase": "Independent Practice",
+      "time": "5 minutes",
+      "description": "Students complete a quick-write reflection: Choose one writing skill from today's activities that you want to improve. Write one paragraph explaining why it matters and one specific step you will take to get better at it."
+    },
+    {
+      "phase": "Closure and Reflection",
+      "time": "3 minutes",
+      "description": "Class debrief: Teacher asks which station was most challenging and why. Students share one thing they reviewed today that they will remember for future writing tasks. Teacher summarizes key takeaways."
+    },
+    {
+      "phase": "Exit Ticket",
+      "time": "2 minutes",
+      "description": "Students complete exit ticket: Write one writing goal for yourself and rate your confidence (1-5) in using text structures, transitions, and revision strategies. Collect for formative data."
+    }
+  ],
+  "differentiation": "For struggling writers: Provide sentence frames at each station, allow use of anchor charts, and pair with supportive peers. For advanced writers: Add extension challenges at stations (e.g., write an original thesis for a new prompt, identify subtle editing errors). For ELL students: Provide bilingual vocabulary cards, visual supports at stations, and allow verbal responses before written. For students with IEPs: Offer extended time at stations, reduce number of items per station, and provide teacher check-ins after each rotation.",
+  "homework": "Choose one piece of writing from this unit. Revise it using at least two strategies practiced today (add transitions, strengthen topic sentences, or improve paragraph structure). Bring the original and revised version to the next class.",
+  "crossCurricular": "Writing Skills Relay connects to reading comprehension (analyzing text structures in social studies texts), mathematics (writing explanations of problem-solving steps), and science (structuring lab reports with clear procedures and conclusions). Students see how writing conventions apply across all subject areas.",
+  "backwardDesign": {
+    "lessonInformation": {
+      "class": "Inter 3",
+      "subject": "Writing",
+      "unit": "Flex Day Classroom Activities",
+      "lessonTitle": "Writing Skills Review and Reinforcement Flex Day",
+      "date": "2026-02-16",
+      "lessonInSequence": "1/1",
+      "lessonLength": "45 minutes",
+      "plannedFocusNotes": "Full-lesson activity plan tied to current syllabus goals and yearly pacing. This flex/catch-up slot can be replaced by rescheduled missed lessons. Activities anchor to Units 1-6 content with emphasis on writing process, structure, and revision skills.",
+      "assessmentIntent": "Quick formative checks, teacher observation during station rotations, peer feedback quality monitoring, and student self-reflection through exit tickets and quick-writes."
+    },
+    "stage1DesiredResults": {
+      "establishedGoals": "Students will consolidate and retain writing skills from Units 1-6 through engaging, collaborative review activities that reinforce text structure, revision strategies, grammar conventions, and the writing process.",
+      "understandings": [
+        "Writing is a recursive process that benefits from planning, drafting, revising, and editing.",
+        "Strong writing adapts to purpose, audience, and genre conventions.",
+        "Peer feedback and self-reflection are essential tools for growth as writers."
+      ],
+      "essentialQuestions": [
+        "How do we choose the right writing strategy for different purposes?",
+        "What makes our writing clear and engaging for readers?",
+        "How can peer feedback help us improve our writing?",
+        "Which writing skills do we still need to strengthen?"
+      ],
+      "knowledge": [
+        "Key features of narrative, expository, and persuasive writing structures",
+        "Steps of the writing process: prewriting, drafting, revising, editing, publishing",
+        "Use of transition words to connect ideas logically",
+        "Common grammar conventions: subject-verb agreement, punctuation, sentence variety",
+        "Strategies for generating and organizing ideas before writing"
+      ],
+      "skills": [
+        "Identify and apply appropriate text structures for different writing purposes",
+        "Revise drafts for clarity, coherence, and audience awareness",
+        "Provide constructive peer feedback using rubrics and checklists",
+        "Self-assess writing strengths and areas for growth",
+        "Use graphic organizers to plan and structure writing"
+      ]
+    },
+    "stage2AssessmentEvidence": {
+      "performanceTasks": "Writing Skills Relay: Teams rotate through four stations reviewing thesis statements, paragraph structure, transitions, and editing. Teams compile a final group reflection identifying which skills need the most practice.",
+      "otherEvidence": [
+        "Teacher observation checklist tracking individual student participation and accuracy at each station",
+        "Peer feedback quality assessment using a simple rubric during collaborative activities",
+        "Quick-write reflection paragraph demonstrating metacognitive awareness of writing goals",
+        "Exit ticket with self-rated confidence levels and personal writing goal",
+        "Think-Pair-Share responses indicating student self-awareness of strengths and gaps"
+      ]
+    },
+    "stage3LearningPlan": {
+      "hookWarmUp": "Writing Terminology Pictionary: In pairs, students take turns drawing writing terms (thesis, topic sentence, transition, audience, revision) while their partner guesses. This fast-paced game energizes the class and activates vocabulary knowledge from previous units in a low-stakes, fun format.",
+      "activatePriorKnowledge": "Think-Pair-Share discussion: Students reflect on which writing skill they feel most confident about and which one remains challenging. Pairs share responses, and the teacher records them on the board to create a visible class profile of strengths and growth areas, informing real-time adjustments to station focus.",
+      "explicitTeachingModeling": "Teacher introduces the Writing Skills Relay format, explains station expectations, and models completing a sample task: analyzing a paragraph for strong topic sentences and supporting details. Teacher demonstrates how to use the peer review checklist, thinking aloud about what to look for and how to give specific feedback.",
+      "guidedPractice": "Whole class completes the first station task together. Teacher guides students through identifying the text structure of a sample passage, underlining transition words, and suggesting one revision. Students practice using the peer review checklist as a group, with teacher scaffolding and immediate feedback.",
+      "collaborativePractice": "Teams rotate through four Writing Skills Relay stations every 3-4 minutes: Station 1 - Thesis Statement Match (match prompts to strong thesis statements), Station 2 - Paragraph Puzzle (reorder jumbled sentences into coherent paragraphs), Station 3 - Transition Word Fill-In (complete sentences with appropriate transitions), Station 4 - Editing Challenge (find and correct errors in a short passage). Teams earn points for accuracy, collaboration, and time management. Teacher circulates with an observation checklist.",
+      "independentPractice": "Students complete a quick-write reflection: Choose one writing skill from today's activities that you want to improve. Write one paragraph explaining why it matters and one specific step you will take to get better at it. This metacognitive exercise helps students internalize their learning and set actionable goals.",
+      "closureReflection": "Class debrief: Teacher asks which station was most challenging and why. Students share one thing they reviewed today that they will remember for future writing tasks. Teacher summarizes key takeaways, connects activities back to yearly pacing goals, and reinforces that flex days are opportunities to strengthen foundations before moving forward.",
+      "exitTicket": "Students complete exit ticket with three components: (1) Write one specific writing goal for yourself, (2) Rate your confidence (1-5) in using text structures, (3) Rate your confidence (1-5) in using transitions and revision strategies. Tickets are collected for formative data to inform future instruction and identify students needing targeted support."
+    },
+    "differentiation": {
+      "forStrugglingWriters": "Provide sentence frames at each station, allow use of anchor charts and reference materials, pair with supportive peers, and offer teacher check-ins after each rotation to ensure understanding.",
+      "forAdvancedWriters": "Add extension challenges at stations such as writing an original thesis for a new prompt, identifying subtle editing errors in complex passages, or creating a model paragraph for peers to analyze.",
+      "forELLStudents": "Provide bilingual vocabulary cards, visual supports and graphic organizers at stations, allow verbal responses before written work, and pair with bilingual peers when possible.",
+      "forStudentsWithIEPs": "Offer extended time at stations, reduce the number of items per station, provide frequent teacher check-ins, and allow alternative response formats (oral, drawn, or dictated) as specified in accommodations."
+    },
+    "resourcesAndMaterials": [
+      "Station task cards for Writing Skills Relay (four stations)",
+      "Graphic organizers: story maps, outline templates, T-charts",
+      "Peer review checklists and simple rubrics",
+      "Timer and scoreboard for team activities",
+      "Whiteboards and markers for quick writes and Pictionary",
+      "Exit ticket slips",
+      "Sample student writing excerpts for analysis at stations",
+      "Reflection journals or half-sheet paper",
+      "Anchor charts displaying writing process steps and text structures"
+    ],
+    "timingBreakdown": {
+      "hookWarmUp": "5 minutes",
+      "activatePriorKnowledge": "5 minutes",
+      "explicitTeachingModeling": "5 minutes",
+      "guidedPractice": "5 minutes",
+      "collaborativePractice": "15 minutes",
+      "independentPractice": "5 minutes",
+      "closureReflection": "3 minutes",
+      "exitTicket": "2 minutes",
+      "totalTime": "45 minutes"
+    },
+    "checkingForUnderstandingQuestions": [
+      "Can you identify the text structure used in this passage?",
+      "What makes this thesis statement strong or weak?",
+      "Which transition word would best connect these two ideas?",
+      "What is one specific change you would suggest to improve this paragraph?",
+      "How do you know when a paragraph needs revision?",
+      "What writing strategy will you use next time you face a blank page?"
+    ],
+    "crossCurricularRealWorldConnections": [
+      "Social Studies: Analyzing text structures in historical documents and primary sources helps students recognize how authors organize information for different purposes.",
+      "Mathematics: Writing clear explanations of problem-solving steps reinforces logical sequencing and precision, skills practiced in the Paragraph Puzzle station.",
+      "Science: Structuring lab reports with clear procedures, observations, and conclusions mirrors the expository writing structures reviewed during the lesson.",
+      "Real World: Professional communication in emails, reports, and presentations requires the same audience awareness, organization, and revision skills practiced today."
+    ],
+    "classroomManagementConsiderations": {
+      "groupingStrategy": "Pre-assign heterogeneous teams of 3-4 students to balance skill levels and ensure peer support. Rotate roles within teams (recorder, timekeeper, spokesperson, materials manager) to promote accountability.",
+      "transitions": "Use a consistent signal (chime or countdown) for station rotations. Practice one quick rotation before starting the timed activity. Display a visible timer so students self-monitor.",
+      "noiseLevel": "Set expectations for collaborative voice levels. Use a visual noise meter. Praise teams that maintain productive volume. Provide quiet alternatives for students who need lower stimulation.",
+      "materialsManagement": "Pre-set materials at each station in labeled folders or trays. Assign one student per team as materials manager. Collect and check materials before dismissing."
+    },
+    "homeworkFollowUp": {
+      "assignment": "Choose one piece of writing from this unit. Revise it using at least two strategies practiced today: add transitions, strengthen topic sentences, or improve paragraph structure. Bring both the original and revised version to the next class.",
+      "purpose": "Reinforces skills reviewed during the flex day and provides tangible evidence of student growth. Allows teacher to assess individual application of strategies in the next lesson.",
+      "support": "Students may use the graphic organizers and peer review checklists from class. Teacher is available for brief questions via email or during office hours."
+    },
+    "teacherReflection": {
+      "postLessonQuestions": [
+        "Which station generated the most engagement and which caused confusion?",
+        "Did the formative data from exit tickets reveal patterns in student needs?",
+        "Were the differentiation supports effective for struggling learners?",
+        "Should any skills be retaught in the next lesson based on today's observations?",
+        "How well did the flex-day format serve as a catch-up versus enrichment opportunity?"
+      ],
+      "notesSpace": "Record observations about individual student performance, group dynamics, timing effectiveness, and adjustments needed for future flex days. Note which skills require targeted mini-lessons in upcoming units."
+    }
+  }
+}

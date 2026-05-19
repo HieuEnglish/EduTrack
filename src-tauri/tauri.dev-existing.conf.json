@@ -1,0 +1,6 @@
+{
+  "build": {
+    "beforeDevCommand": "echo Using existing EduTrack dev server",
+    "devUrl": "http://127.0.0.1:5176"
+  }
+}

@@ -1,0 +1,353 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans,sans-serif);color:var(--color-text-primary)}
+.shell{display:grid;grid-template-columns:172px 1fr;min-height:700px;border:0.5px solid var(--color-border-tertiary);border-radius:16px;overflow:hidden}
+.sidebar{background:#FBEAF0;border-right:0.5px solid #F4C0D1;padding:14px 10px;display:flex;flex-direction:column;gap:2px}
+.logo{font-size:14px;font-weight:500;color:#72243E;margin-bottom:10px;padding-bottom:10px;border-bottom:0.5px solid #F4C0D1;display:flex;align-items:center;gap:7px}
+.logo-badge{width:28px;height:28px;border-radius:8px;background:#F4C0D1;display:flex;align-items:center;justify-content:center;font-size:14px;color:#72243E}
+.logo-text span{font-size:10px;font-weight:400;color:#D4537E;display:block}
+.nav-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;font-size:12px;cursor:pointer;color:#5F5E5A;transition:background .13s}
+.nav-item:hover{background:rgba(0,0,0,.04)}
+.nav-item.active{font-weight:500}
+.nav-item i{font-size:15px}
+.nav-a.active{background:#FBEAF0;color:#72243E} .nav-a.active i{color:#D4537E}
+.nav-b.active{background:#E1F5EE;color:#085041} .nav-b.active i{color:#1D9E75}
+.nav-c.active{background:#E6F1FB;color:#0C447C} .nav-c.active i{color:#378ADD}
+.nav-d.active{background:#EEEDFE;color:#3C3489} .nav-d.active i{color:#7F77DD}
+.nav-e.active{background:#EAF3DE;color:#27500A} .nav-e.active i{color:#639922}
+.nav-f.active{background:#FAEEDA;color:#633806} .nav-f.active i{color:#BA7517}
+.nav-sec{font-size:10px;color:#B4B2A9;letter-spacing:.05em;padding:9px 9px 3px;text-transform:uppercase}
+.main{background:var(--color-background-primary);display:flex;flex-direction:column}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:13px 18px;border-bottom:0.5px solid var(--color-border-tertiary)}
+.topbar-left .day{font-size:16px;font-weight:500}
+.topbar-left .dt{font-size:11px;color:var(--color-text-secondary);margin-top:1px}
+.class-pills{display:flex;gap:5px}
+.cpill{font-size:11px;padding:4px 11px;border-radius:20px;cursor:pointer;border:0.5px solid transparent;transition:all .13s;font-weight:400}
+.cpill-a{background:#FBEAF0;color:#72243E;border-color:#F4C0D1}
+.cpill-b{background:#E1F5EE;color:#085041;border-color:#9FE1CB}
+.cpill-c{background:#EEEDFE;color:#3C3489;border-color:#CECBF6}
+.cpill.active{font-weight:500}
+.content{flex:1;padding:14px 18px;display:flex;flex-direction:column;gap:12px}
+.stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.scard{border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.scard-a{background:#FBEAF0} .scard-a .sv{color:#72243E} .scard-a .sl{color:#D4537E} .scard-a .si{color:#F4C0D1}
+.scard-b{background:#E1F5EE} .scard-b .sv{color:#085041} .scard-b .sl{color:#1D9E75} .scard-b .si{color:#9FE1CB}
+.scard-c{background:#EEEDFE} .scard-c .sv{color:#3C3489} .scard-c .sl{color:#7F77DD} .scard-c .si{color:#CECBF6}
+.scard-d{background:#FAEEDA} .scard-d .sv{color:#633806} .scard-d .sl{color:#BA7517} .scard-d .si{color:#FAC775}
+.scard .sl{font-size:10px;display:flex;align-items:center;gap:4px;margin-bottom:2px}
+.scard .sl i{font-size:13px}
+.scard .sv{font-size:22px;font-weight:500}
+.scard .ss{font-size:10px;margin-top:1px;opacity:.7}
+.scard .sv-row{display:flex;align-items:center;justify-content:space-between}
+.scard .si{font-size:22px}
+.main-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.panel{border-radius:12px;padding:13px 15px;border:0.5px solid transparent}
+.panel-rose{background:#FBEAF0;border-color:#F4C0D1}
+.panel-mint{background:#E1F5EE;border-color:#9FE1CB}
+.panel-sky{background:#E6F1FB;border-color:#B5D4F4}
+.panel-lav{background:#EEEDFE;border-color:#CECBF6}
+.panel-sun{background:#FAEEDA;border-color:#FAC775}
+.panel-sage{background:#EAF3DE;border-color:#C0DD97}
+.ph{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.ph h3{font-size:13px;font-weight:500}
+.ph-rose h3{color:#72243E} .ph-rose i{color:#D4537E}
+.ph-mint h3{color:#085041} .ph-mint i{color:#1D9E75}
+.ph-sky h3{color:#0C447C} .ph-sky i{color:#378ADD}
+.ph-lav h3{color:#3C3489} .ph-lav i{color:#7F77DD}
+.ph-sun h3{color:#633806} .ph-sun i{color:#BA7517}
+.ph-sage h3{color:#27500A} .ph-sage i{color:#639922}
+.ph h3 i{font-size:14px;vertical-align:-2px;margin-right:5px}
+.pbtn{font-size:11px;padding:3px 9px;border-radius:20px;cursor:pointer;border:0.5px solid;transition:opacity .13s}
+.pbtn-rose{background:#F4C0D1;border-color:#ED93B1;color:#72243E}
+.pbtn-mint{background:#9FE1CB;border-color:#5DCAA5;color:#085041}
+.pbtn-sky{background:#B5D4F4;border-color:#85B7EB;color:#0C447C}
+.pbtn-lav{background:#CECBF6;border-color:#AFA9EC;color:#3C3489}
+.pbtn-sun{background:#FAC775;border-color:#EF9F27;color:#633806}
+.pbtn-sage{background:#C0DD97;border-color:#97C459;color:#27500A}
+.pbtn:hover{opacity:.8}
+.srow{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:0.5px solid rgba(0,0,0,.06)}
+.srow:last-child{border-bottom:none}
+.av{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500;flex-shrink:0}
+.av-a{background:#F4C0D1;color:#72243E}
+.av-b{background:#9FE1CB;color:#085041}
+.av-c{background:#CECBF6;color:#3C3489}
+.av-d{background:#F5C4B3;color:#712B13}
+.av-e{background:#C0DD97;color:#27500A}
+.sinfo{flex:1;min-width:0}
+.sname{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#2C2C2A}
+.snick{font-size:10px;color:#888780}
+.abtns{display:flex;gap:3px}
+.abtn{width:24px;height:24px;border-radius:6px;border:0.5px solid rgba(0,0,0,.1);background:rgba(255,255,255,.6);cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;transition:all .12s}
+.abtn-p.on{background:#9FE1CB;border-color:#5DCAA5;color:#085041}
+.abtn-l.on{background:#FAC775;border-color:#EF9F27;color:#633806}
+.abtn-a.on{background:#F09595;border-color:#E24B4A;color:#791F1F}
+.lesson-box{border:1.5px dashed #F4C0D1;border-radius:10px;padding:12px;font-size:12px;color:#D4537E;cursor:pointer;text-align:center;transition:background .13s;background:rgba(255,255,255,.4)}
+.lesson-box:hover{background:rgba(255,255,255,.7)}
+.lesson-box i{font-size:18px;display:block;margin-bottom:3px}
+.lesson-done{background:rgba(255,255,255,.5);border:0.5px solid #9FE1CB;border-radius:10px;padding:10px 12px}
+.lesson-done .lt{font-size:12px;font-weight:500;color:#085041;display:flex;align-items:center;gap:5px}
+.lesson-done .ld{font-size:11px;color:#0F6E56;margin-top:4px;line-height:1.5}
+.tag{display:inline-block;font-size:10px;padding:2px 7px;border-radius:20px;margin-right:3px;margin-top:4px}
+.tag-r{background:#F4C0D1;color:#72243E}
+.tag-m{background:#9FE1CB;color:#085041}
+.tag-s{background:#B5D4F4;color:#0C447C}
+.tag-l{background:#CECBF6;color:#3C3489}
+.tag-u{background:#FAC775;color:#633806}
+.ag-item{display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:0.5px solid rgba(0,0,0,.06)}
+.ag-item:last-child{border-bottom:none}
+.ag-dot{width:7px;height:7px;border-radius:50%;margin-top:4px;flex-shrink:0}
+.ag-txt{font-size:11px;line-height:1.5;color:#444441}
+.ag-txt strong{font-weight:500;color:#2C2C2A}
+.pr-row{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+.pr-name{font-size:11px;width:48px;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#444441}
+.pr-bg{flex:1;height:8px;background:rgba(255,255,255,.5);border-radius:4px;overflow:hidden}
+.pr-fill{height:100%;border-radius:4px}
+.pr-sc{font-size:10px;width:24px;text-align:right;color:#888780;font-weight:500}
+.char-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.char-card{background:rgba(255,255,255,.5);border-radius:10px;padding:8px 10px;border:0.5px solid rgba(0,0,0,.07)}
+.char-card .cn{font-size:11px;font-weight:500;color:#2C2C2A}
+.char-card .ck{font-size:10px;color:#888780;margin-bottom:4px}
+.char-lv{display:flex;gap:3px;margin-top:4px}
+.lv-pip{width:14px;height:5px;border-radius:3px;background:rgba(0,0,0,.1)}
+.lv-pip.lit{background:#7F77DD}
+.tab-row{display:flex;gap:4px;margin-bottom:8px}
+.tab{font-size:11px;padding:3px 9px;border-radius:20px;border:0.5px solid rgba(0,0,0,.1);cursor:pointer;background:rgba(255,255,255,.4);color:#5F5E5A}
+.tab.on{background:#CECBF6;border-color:#AFA9EC;color:#3C3489;font-weight:500}
+</style>
+
+<h2 class="sr-only">EduTrack colourful daily teacher dashboard with pastel-themed panels for attendance, lesson log, AI insights, progress and character avatars</h2>
+
+<div class="shell">
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-badge"><i class="ti ti-school" style="font-size:15px"></i></div>
+      <div class="logo-text">EduTrack<span>Greenfield Primary</span></div>
+    </div>
+    <div class="nav-item nav-a active"><i class="ti ti-home"></i> Today</div>
+    <div class="nav-item nav-b"><i class="ti ti-users"></i> Students</div>
+    <div class="nav-item nav-c"><i class="ti ti-calendar"></i> Schedule</div>
+    <div class="nav-item nav-d"><i class="ti ti-file-text"></i> Tests</div>
+    <div class="nav-item nav-e"><i class="ti ti-chart-bar"></i> Progress</div>
+    <div class="nav-sec">Reports</div>
+    <div class="nav-item nav-f"><i class="ti ti-brain"></i> Generate</div>
+    <div class="nav-item nav-d"><i class="ti ti-archive"></i> Archive</div>
+    <div class="nav-sec">School</div>
+    <div class="nav-item nav-b"><i class="ti ti-building-school"></i> Classes</div>
+    <div class="nav-item"><i class="ti ti-settings"></i> Settings</div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="topbar-left">
+        <div class="day">Good morning, Ms. Chen <span style="font-size:13px;font-weight:400;color:var(--color-text-secondary)">— 3 sessions today</span></div>
+        <div class="dt">Monday, 12 May 2025</div>
+      </div>
+      <div class="class-pills">
+        <div class="cpill cpill-a active" onclick="switchClass(this)">Year 4B</div>
+        <div class="cpill cpill-b" onclick="switchClass(this)">Year 5A</div>
+        <div class="cpill cpill-c" onclick="switchClass(this)">Year 3C</div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="stat-row">
+        <div class="scard scard-a">
+          <div class="sl"><i class="ti ti-users"></i> Students</div>
+          <div class="sv-row"><div class="sv">28</div><i class="ti ti-users si"></i></div>
+          <div class="ss">of 28 enrolled</div>
+        </div>
+        <div class="scard scard-b">
+          <div class="sl"><i class="ti ti-check"></i> Present</div>
+          <div class="sv-row"><div class="sv">24</div><i class="ti ti-circle-check si"></i></div>
+          <div class="ss">3 absent · 1 late</div>
+        </div>
+        <div class="scard scard-c">
+          <div class="sl"><i class="ti ti-star"></i> Avg score</div>
+          <div class="sv-row"><div class="sv">74%</div><i class="ti ti-chart-line si"></i></div>
+          <div class="ss">across 6 tests</div>
+        </div>
+        <div class="scard scard-d">
+          <div class="sl"><i class="ti ti-trophy"></i> Top streak</div>
+          <div class="sv-row"><div class="sv">12</div><i class="ti ti-flame si"></i></div>
+          <div class="ss">Amara — 12 days</div>
+        </div>
+      </div>
+
+      <div class="main-grid">
+        <div class="panel panel-rose">
+          <div class="ph ph-rose">
+            <h3><i class="ti ti-clipboard-list"></i>Attendance</h3>
+            <button class="pbtn pbtn-rose" onclick="markAll()">Mark all present</button>
+          </div>
+          <div id="att-list">
+            <div class="srow">
+              <div class="av av-a">AL</div>
+              <div class="sinfo"><div class="sname">Amara Liu</div><div class="snick">The Ember Fox</div></div>
+              <div class="abtns">
+                <div class="abtn abtn-p on" onclick="setAtt(this,'p')"><i class="ti ti-check"></i></div>
+                <div class="abtn abtn-l" onclick="setAtt(this,'l')"><i class="ti ti-clock"></i></div>
+                <div class="abtn abtn-a" onclick="setAtt(this,'a')"><i class="ti ti-x"></i></div>
+              </div>
+            </div>
+            <div class="srow">
+              <div class="av av-b">BM</div>
+              <div class="sinfo"><div class="sname">Ben Marsh</div><div class="snick">Storm Turtle</div></div>
+              <div class="abtns">
+                <div class="abtn abtn-p" onclick="setAtt(this,'p')"><i class="ti ti-check"></i></div>
+                <div class="abtn abtn-l on" onclick="setAtt(this,'l')"><i class="ti ti-clock"></i></div>
+                <div class="abtn abtn-a" onclick="setAtt(this,'a')"><i class="ti ti-x"></i></div>
+              </div>
+            </div>
+            <div class="srow">
+              <div class="av av-c">CK</div>
+              <div class="sinfo"><div class="sname">Clara Kim</div><div class="snick">Silver Owl</div></div>
+              <div class="abtns">
+                <div class="abtn abtn-p on" onclick="setAtt(this,'p')"><i class="ti ti-check"></i></div>
+                <div class="abtn abtn-l" onclick="setAtt(this,'l')"><i class="ti ti-clock"></i></div>
+                <div class="abtn abtn-a" onclick="setAtt(this,'a')"><i class="ti ti-x"></i></div>
+              </div>
+            </div>
+            <div class="srow">
+              <div class="av av-d">DN</div>
+              <div class="sinfo"><div class="sname">Dario Neri</div><div class="snick">Cobalt Badger</div></div>
+              <div class="abtns">
+                <div class="abtn abtn-p" onclick="setAtt(this,'p')"><i class="ti ti-check"></i></div>
+                <div class="abtn abtn-l" onclick="setAtt(this,'l')"><i class="ti ti-clock"></i></div>
+                <div class="abtn abtn-a on" onclick="setAtt(this,'a')"><i class="ti ti-x"></i></div>
+              </div>
+            </div>
+            <div class="srow">
+              <div class="av av-e">EP</div>
+              <div class="sinfo"><div class="sname">Ellie Park</div><div class="snick">Jade Sparrow</div></div>
+              <div class="abtns">
+                <div class="abtn abtn-p on" onclick="setAtt(this,'p')"><i class="ti ti-check"></i></div>
+                <div class="abtn abtn-l" onclick="setAtt(this,'l')"><i class="ti ti-clock"></i></div>
+                <div class="abtn abtn-a" onclick="setAtt(this,'a')"><i class="ti ti-x"></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div class="panel panel-mint">
+            <div class="ph ph-mint">
+              <h3><i class="ti ti-notebook"></i>Today's lesson</h3>
+            </div>
+            <div id="lesson-area">
+              <div class="lesson-box" onclick="createLesson()">
+                <i class="ti ti-plus"></i>
+                Create lesson
+              </div>
+            </div>
+          </div>
+
+          <div class="panel panel-lav">
+            <div class="ph ph-lav">
+              <h3><i class="ti ti-activity"></i>AI agent insights</h3>
+            </div>
+            <div class="tab-row">
+              <button class="tab on" onclick="switchTab(this)">All</button>
+              <button class="tab" onclick="switchTab(this)">Flags</button>
+              <button class="tab" onclick="switchTab(this)">Wins</button>
+            </div>
+            <div class="ag-item"><div class="ag-dot" style="background:#D85A30"></div><div class="ag-txt"><strong>Dario</strong> — 3rd absence this month. Reading agent flagging comprehension gap widening.</div></div>
+            <div class="ag-item"><div class="ag-dot" style="background:#1D9E75"></div><div class="ag-txt"><strong>Clara</strong> — Maths agent: +12pt improvement streak over 4 tests.</div></div>
+            <div class="ag-item"><div class="ag-dot" style="background:#EF9F27"></div><div class="ag-txt"><strong>Ben</strong> — Late 4 of last 6 sessions. Writing output lower on late days.</div></div>
+            <div class="ag-item"><div class="ag-dot" style="background:#1D9E75"></div><div class="ag-txt"><strong>Amara</strong> — Literacy agent: vocabulary range up 18% since term start.</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="main-grid">
+        <div class="panel panel-sun">
+          <div class="ph ph-sun">
+            <h3><i class="ti ti-podium"></i>Progress snapshot</h3>
+            <button class="pbtn pbtn-sun" onclick="sendPrompt('Show me the full progress breakdown for Year 4B ↗')">Full report ↗</button>
+          </div>
+          <div class="pr-row"><span class="pr-name">Amara</span><div class="pr-bg"><div class="pr-fill" style="width:88%;background:#9FE1CB"></div></div><span class="pr-sc">88</span></div>
+          <div class="pr-row"><span class="pr-name">Clara</span><div class="pr-bg"><div class="pr-fill" style="width:82%;background:#CECBF6"></div></div><span class="pr-sc">82</span></div>
+          <div class="pr-row"><span class="pr-name">Ellie</span><div class="pr-bg"><div class="pr-fill" style="width:74%;background:#FAC775"></div></div><span class="pr-sc">74</span></div>
+          <div class="pr-row"><span class="pr-name">Ben</span><div class="pr-bg"><div class="pr-fill" style="width:61%;background:#F5C4B3"></div></div><span class="pr-sc">61</span></div>
+          <div class="pr-row"><span class="pr-name">Dario</span><div class="pr-bg"><div class="pr-fill" style="width:48%;background:#F09595"></div></div><span class="pr-sc">48</span></div>
+        </div>
+
+        <div class="panel panel-sage">
+          <div class="ph ph-sage">
+            <h3><i class="ti ti-shield-star"></i>Character levels</h3>
+            <button class="pbtn pbtn-sage" onclick="sendPrompt('How do character levels work in EduTrack? ↗')">How it works ↗</button>
+          </div>
+          <div class="char-grid">
+            <div class="char-card">
+              <div class="ck">The Ember Fox</div>
+              <div class="cn">Amara Liu</div>
+              <div class="char-lv">
+                <div class="lv-pip lit"></div><div class="lv-pip lit"></div><div class="lv-pip lit"></div><div class="lv-pip lit"></div><div class="lv-pip"></div>
+              </div>
+            </div>
+            <div class="char-card">
+              <div class="ck">Silver Owl</div>
+              <div class="cn">Clara Kim</div>
+              <div class="char-lv">
+                <div class="lv-pip lit"></div><div class="lv-pip lit"></div><div class="lv-pip lit"></div><div class="lv-pip"></div><div class="lv-pip"></div>
+              </div>
+            </div>
+            <div class="char-card">
+              <div class="ck">Jade Sparrow</div>
+              <div class="cn">Ellie Park</div>
+              <div class="char-lv">
+                <div class="lv-pip lit"></div><div class="lv-pip lit"></div><div class="lv-pip lit"></div><div class="lv-pip"></div><div class="lv-pip"></div>
+              </div>
+            </div>
+            <div class="char-card">
+              <div class="ck">Storm Turtle</div>
+              <div class="cn">Ben Marsh</div>
+              <div class="char-lv">
+                <div class="lv-pip lit"></div><div class="lv-pip lit"></div><div class="lv-pip"></div><div class="lv-pip"></div><div class="lv-pip"></div>
+              </div>
+            </div>
+            <div class="char-card">
+              <div class="ck">Cobalt Badger</div>
+              <div class="cn">Dario Neri</div>
+              <div class="char-lv">
+                <div class="lv-pip lit"></div><div class="lv-pip"></div><div class="lv-pip"></div><div class="lv-pip"></div><div class="lv-pip"></div>
+              </div>
+            </div>
+            <div class="char-card" style="display:flex;align-items:center;justify-content:center;border:1.5px dashed rgba(0,0,0,.1);cursor:pointer" onclick="sendPrompt('How do I add a new student to Year 4B? ↗')">
+              <div style="text-align:center;color:#888780;font-size:11px"><i class="ti ti-plus" style="font-size:16px;display:block;margin-bottom:2px"></i>Add student</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function setAtt(btn,type){
+  const row=btn.closest('.abtns');
+  row.querySelectorAll('.abtn').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+}
+function markAll(){
+  document.querySelectorAll('.abtns').forEach(row=>{
+    row.querySelectorAll('.abtn').forEach(b=>b.classList.remove('on'));
+    row.querySelector('.abtn-p').classList.add('on');
+  });
+}
+function createLesson(){
+  document.getElementById('lesson-area').innerHTML=`<div class="lesson-done">
+    <div class="lt"><i class="ti ti-check" style="font-size:13px"></i> Lesson created — Monday 12 May</div>
+    <div class="ld">Fractions and decimals: comparing values on a number line. Group work + worksheet.</div>
+    <div style="margin-top:5px"><span class="tag tag-m">Numeracy</span><span class="tag tag-s">Group work</span><span class="tag tag-l">Worksheet</span><span class="tag tag-u">Year 4B</span></div>
+  </div>`;
+}
+function switchClass(el){
+  document.querySelectorAll('.cpill').forEach(p=>p.classList.remove('active'));
+  el.classList.add('active');
+}
+function switchTab(btn){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  btn.classList.add('on');
+}
+</script>

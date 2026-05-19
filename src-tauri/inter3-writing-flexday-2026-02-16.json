@@ -1,0 +1,250 @@
+{
+  "v": "1",
+  "objective": "Students will apply previously learned writing strategies through engaging review games and collaborative activities that reinforce key concepts from Units 1-4, demonstrating retention and transfer of skills in a low-stakes, interactive flex-day format.",
+  "transferGoal": "Students will independently select and apply appropriate writing strategies across different contexts and genres, self-monitor their progress, and seek feedback to improve their writing without direct teacher prompting.",
+  "enduringUnderstanding": "Effective writers draw on a repertoire of strategies, adapt their approach based on purpose and audience, and use reflection and peer feedback to continuously refine their craft.",
+  "essentialQuestions": [
+    "Which writing strategies do I already know, and when should I use each one?",
+    "How can I help my peers improve their writing through constructive feedback?",
+    "What makes writing clear, engaging, and purposeful for different audiences?",
+    "How do I decide what to revise when I review my own work?"
+  ],
+  "knowledge": [
+    "Students will know the key writing strategies covered in Units 1-4: paragraph structure, thesis development, evidence integration, revision techniques, and audience awareness.",
+    "Students will know the criteria for effective peer feedback using the TAG method (Tell something you like, Ask a question, Give a suggestion).",
+    "Students will know common writing pitfalls and how to identify them in their own and others' work.",
+    "Students will know the purpose and structure of different writing genres studied this year."
+  ],
+  "skills": [
+    "Students will be able to identify and categorize writing strategies through interactive sorting and matching activities.",
+    "Students will be able to provide specific, actionable peer feedback using established protocols.",
+    "Students will be able to self-assess their writing against rubric criteria and identify areas for growth.",
+    "Students will be able to collaborate effectively in small groups to solve writing challenges and analyze mentor texts.",
+    "Students will be able to reflect on their writing journey and set specific goals for future improvement."
+  ],
+  "successCriteria": [
+    "I can name at least three writing strategies I have learned and explain when to use each one.",
+    "I can give my partner specific feedback using the TAG method during peer review.",
+    "I can identify strengths and one area for improvement in my own writing using the rubric.",
+    "I can participate actively in group activities and contribute meaningfully to discussions.",
+    "I can complete an exit ticket that shows my understanding of at least one key writing concept."
+  ],
+  "assessment": "Formative assessment throughout the lesson via teacher observation during activities, peer feedback quality checks, group discussion contributions, self-assessment reflections, and an exit ticket measuring retention of key writing strategies. No summative grade assigned; data collected to inform future instruction and identify students needing additional support.",
+  "performanceTask": "Students will participate in a 'Writing Strategy Relay' where teams rotate through stations, each requiring them to demonstrate a different writing skill (identifying thesis statements, adding evidence to paragraphs, revising for clarity, providing peer feedback). Teams earn points for accuracy and collaboration, culminating in a group reflection on which strategies they used most effectively and which they want to practice further.",
+  "materials": [
+    "Writing strategy cards (pre-printed with strategy names and examples)",
+    "Mentor text excerpts from Units 1-4 (printed handouts)",
+    "Peer feedback protocol posters (TAG method displayed)",
+    "Station activity packets (one per team)",
+    "Timer or stopwatch for station rotations",
+    "Whiteboard markers and chart paper for group work",
+    "Exit ticket slips (pre-printed with reflection prompts)",
+    "Student writing portfolios or notebooks for reference",
+    "Small prizes or recognition certificates for team participation",
+    "Projector or screen for displaying instructions and timers"
+  ],
+  "vocabulary": [
+    "Thesis statement",
+    "Evidence",
+    "Revision",
+    "Peer feedback",
+    "Audience awareness",
+    "Paragraph structure",
+    "Topic sentence",
+    "Elaboration",
+    "Transition",
+    "Self-assessment"
+  ],
+  "lessonFlow": [
+    {
+      "phase": "Hook and Warm-Up",
+      "time": "5 minutes",
+      "description": "Students enter to find a 'Mystery Writing Challenge' projected on the board: a short paragraph with intentional errors. They have 2 minutes to identify as many issues as possible, then share with a partner. Quick whole-class debrief reveals the answer, activating their editing mindset and setting the tone for a strategy-focused day."
+    },
+    {
+      "phase": "Activate Prior Knowledge",
+      "time": "7 minutes",
+      "description": "Students receive a set of strategy cards and work in pairs to sort them into categories: Planning, Drafting, Revising, and Editing. Teacher circulates, asking probing questions about why they placed each card where they did. Brief whole-class check ensures common understanding of the strategy framework."
+    },
+    {
+      "phase": "Explicit Teaching and Modeling",
+      "time": "5 minutes",
+      "description": "Teacher introduces the Writing Strategy Relay format, models how to complete one station task using a think-aloud protocol, and reviews the TAG peer feedback method with a quick example. Expectations for collaboration, timing, and rotation are clearly stated."
+    },
+    {
+      "phase": "Guided Practice",
+      "time": "3 minutes",
+      "description": "As a whole class, students complete the first station task together. Teacher guides the discussion, models correct responses, and addresses misconceptions before students break into teams for independent station work."
+    },
+    {
+      "phase": "Collaborative Practice",
+      "time": "15 minutes",
+      "description": "Teams of 3-4 rotate through four stations (approximately 3.5 minutes each): Station 1 - Thesis Statement Match (match thesis statements to prompts), Station 2 - Evidence Integration (add appropriate evidence to body paragraphs), Station 3 - Revision Challenge (revise weak paragraphs for clarity and flow), Station 4 - Peer Feedback Practice (use TAG method on sample student writing). Teacher circulates, observes, and provides just-in-time support."
+    },
+    {
+      "phase": "Independent Practice",
+      "time": "5 minutes",
+      "description": "Students return to their seats and complete a self-assessment reflection: they identify two strategies they feel confident about, one they want to improve, and write one specific goal for their next writing assignment. They reference their portfolios or recent work to ground their reflection in evidence."
+    },
+    {
+      "phase": "Closure and Reflection",
+      "time": "3 minutes",
+      "description": "Teacher leads a quick wrap-up: teams share one strategy they used well today, teacher acknowledges strong collaboration observed, and students preview how the strategies practiced today connect to upcoming units. Emphasis placed on the flex-day purpose: strengthening foundations before moving forward."
+    },
+    {
+      "phase": "Exit Ticket",
+      "time": "2 minutes",
+      "description": "Students complete a brief exit ticket answering: 'Name one writing strategy you reviewed today and explain when you would use it in your own writing.' Collected as students leave to inform future planning and identify students who may need targeted reteaching."
+    }
+  ],
+  "differentiation": "For emerging writers: provide sentence stems at each station, pair strategically with supportive peers, and allow extended time at revision station with teacher check-in. For advanced writers: add extension challenges at each station (e.g., identify counterarguments, suggest alternative evidence, analyze author's craft choices). For ELL students: provide bilingual strategy cards, visual anchors at each station, and allow verbal responses before written. For students with attention needs: assign clear team roles (timekeeper, recorder, materials manager, reporter), use visual timer, and build in brief movement transitions between stations. All students access the same core content but with varying levels of scaffolding and challenge.",
+  "homework": "Students will review their self-assessment reflection and select one writing strategy to focus on during their next independent writing task. They will write a brief paragraph (5-7 sentences) applying that strategy intentionally and bring it to the next class for a quick peer check-in. No additional worksheets or busy work; homework directly connects to their personal goal-setting from today's lesson.",
+  "crossCurricular": "This flex-day lesson connects to reading comprehension (analyzing mentor texts for structure and craft), oral communication (collaborative discussion and peer feedback protocols), and critical thinking (evaluating evidence, making revision decisions). The strategy relay format mirrors problem-solving approaches used in mathematics (step-by-step processes) and science (hypothesis testing and revision). Students practice skills transferable to any subject requiring written communication.",
+  "backwardDesign": {
+    "lessonInformation": {
+      "class": "Inter 3",
+      "subject": "Writing",
+      "unit": "Flex Day Classroom Activities",
+      "lessonTitle": "Writing Strategy Relay: Review and Reinforce",
+      "date": "2026-02-16",
+      "lessonInSequence": "1/1",
+      "lessonLength": "45 minutes",
+      "plannedFocusNotes": "Generate a full-lesson activity plan tied to current syllabus goals and yearly pacing. This day remains a flex/catch-up slot and can be replaced by rescheduled missed lessons.",
+      "assessmentIntent": "Use quick formative checks, teacher observation, and student reflection during activities.",
+      "yearPacingContext": {
+        "yearGoalTrajectory": "Unit 2 (6 lessons), Unit 1 (4 lessons), Unit 5 (4 lessons), Unit 6 (4 lessons), Unit 3 (4 lessons), Unit 4 (4 lessons)",
+        "monthByMonthFocus": {
+          "2025-08": "Unit 1 (4)",
+          "2025-09": "Unit 5 (4), Unit 2 (1)",
+          "2025-10": "Unit 2 (4)",
+          "2025-11": "Unit 6 (3), Unit 2 (1)",
+          "2025-12": "Unit 3 (4), Unit 6 (1)",
+          "2026-01": "Unit 4 (4)"
+        },
+        "currentPosition": "February 2026 - Post Unit 4 completion, pre-Unit 3 review cycle. Students have been exposed to all six units; this flex day consolidates learning across Units 1-4 with emphasis on retention and transfer."
+      }
+    },
+    "stage1DesiredResults": {
+      "establishedGoals": "Students will demonstrate retention of writing strategies from Units 1-4 through interactive review activities, showing ability to identify, apply, and reflect on strategies independently.",
+      "understandings": [
+        "Effective writers use a flexible repertoire of strategies and select the right tool for the writing task.",
+        "Revision and peer feedback are essential parts of the writing process, not optional add-ons.",
+        "Self-awareness about strengths and growth areas leads to more intentional writing improvement."
+      ],
+      "essentialQuestions": [
+        "Which writing strategies do I already know, and when should I use each one?",
+        "How can I help my peers improve their writing through constructive feedback?",
+        "What makes writing clear, engaging, and purposeful for different audiences?",
+        "How do I decide what to revise when I review my own work?"
+      ],
+      "studentsWillKnow": [
+        "Key writing strategies from Units 1-4: paragraph structure, thesis development, evidence integration, revision techniques, audience awareness",
+        "TAG peer feedback protocol (Tell, Ask, Give)",
+        "Common writing pitfalls and how to identify them",
+        "Purpose and structure of different writing genres studied this year"
+      ],
+      "studentsWillBeAbleTo": [
+        "Identify and categorize writing strategies through interactive activities",
+        "Provide specific, actionable peer feedback using established protocols",
+        "Self-assess writing against rubric criteria and identify growth areas",
+        "Collaborate effectively in small groups to solve writing challenges",
+        "Reflect on writing journey and set specific goals for improvement"
+      ]
+    },
+    "stage2AssessmentEvidence": {
+      "performanceTasks": "Writing Strategy Relay: Teams rotate through four stations demonstrating thesis identification, evidence integration, revision skills, and peer feedback. Points awarded for accuracy and collaboration. Culminates in group reflection on strategy use.",
+      "otherEvidence": [
+        "Teacher observation checklist during station rotations (tracking engagement, accuracy, collaboration)",
+        "Peer feedback quality check using TAG protocol rubric",
+        "Self-assessment reflection completed independently",
+        "Exit ticket measuring retention of at least one key writing strategy",
+        "Strategy card sorting activity (prior knowledge activation check)"
+      ],
+      "assessmentCriteria": "Formative only; no summative grade. Success measured by: active participation in all stations, accurate identification of at least 3 writing strategies, use of TAG method in peer feedback, completion of self-assessment with specific goal, and exit ticket demonstrating understanding of one strategy's application."
+    },
+    "stage3LearningPlan": {
+      "hookWarmUp": "Mystery Writing Challenge: Students analyze a paragraph with intentional errors, identify issues individually, then discuss with a partner. Quick whole-class debrief activates editing mindset and signals that today is about noticing and fixing writing problems.",
+      "activatePriorKnowledge": "Strategy Card Sort: In pairs, students categorize pre-printed strategy cards into Planning, Drafting, Revising, and Editing. Teacher circulates with probing questions. Whole-class check ensures shared understanding of the strategy framework and surfaces any misconceptions before station work.",
+      "explicitTeachingModeling": "Teacher introduces the Writing Strategy Relay format, models completing one station task using think-aloud protocol, and demonstrates the TAG peer feedback method with a concrete example. Clear expectations stated for collaboration, timing, rotation procedures, and noise level.",
+      "guidedPractice": "Whole-class completion of the first station task together. Teacher guides discussion, models correct responses, addresses misconceptions in real time, and ensures all students understand the task format before breaking into teams for independent station work.",
+      "collaborativePractice": "Teams of 3-4 rotate through four stations (3.5 minutes each): Station 1 - Thesis Statement Match, Station 2 - Evidence Integration, Station 3 - Revision Challenge, Station 4 - Peer Feedback Practice using TAG. Teacher circulates, observes, provides just-in-time support, and notes common errors for whole-class debrief.",
+      "independentPractice": "Students complete self-assessment reflection at their desks: identify two confident strategies, one area for improvement, and write one specific goal for next writing assignment. Reference portfolios or recent work to ground reflection in evidence rather than vague impressions.",
+      "closureReflection": "Quick wrap-up: teams share one strategy they used well, teacher acknowledges strong collaboration observed, students preview how today's strategies connect to upcoming units. Emphasis on flex-day purpose: strengthening foundations before moving forward. Students leave with clearer sense of their writing toolkit.",
+      "exitTicket": "Brief written response: 'Name one writing strategy you reviewed today and explain when you would use it in your own writing.' Collected as students leave. Data used to inform future planning and identify students needing targeted reteaching in small groups."
+    },
+    "differentiation": {
+      "emergingWriters": "Sentence stems at each station, strategic pairing with supportive peers, extended time at revision station with teacher check-in, simplified vocabulary on strategy cards.",
+      "advancedWriters": "Extension challenges at each station: identify counterarguments, suggest alternative evidence types, analyze author's craft choices, create original examples for peers.",
+      "englishLanguageLearners": "Bilingual strategy cards, visual anchors at each station, allow verbal responses before written, pair with bilingual peer if available, pre-teach key vocabulary.",
+      "attentionAndFocusNeeds": "Clear team roles assigned (timekeeper, recorder, materials manager, reporter), visual timer displayed, brief movement transitions between stations, chunked instructions with visual support."
+    },
+    "resourcesAndMaterials": {
+      "materialsList": [
+        "Writing strategy cards (pre-printed with strategy names and examples)",
+        "Mentor text excerpts from Units 1-4 (printed handouts)",
+        "Peer feedback protocol posters (TAG method displayed)",
+        "Station activity packets (one per team)",
+        "Timer or stopwatch for station rotations",
+        "Whiteboard markers and chart paper for group work",
+        "Exit ticket slips (pre-printed with reflection prompts)",
+        "Student writing portfolios or notebooks for reference",
+        "Small prizes or recognition certificates for team participation",
+        "Projector or screen for displaying instructions and timers"
+      ],
+      "technologyNeeds": "Projector or smartboard for displaying Mystery Writing Challenge, station instructions, and visual timer. Optional: document camera for sharing exemplar responses during debrief.",
+      "preparationNotes": "Pre-print and laminate strategy cards for reuse. Prepare four station packets with differentiated versions (standard and extension). Set up room with four distinct station areas. Test projector and timer before class. Arrange seating for easy team formation and rotation."
+    },
+    "timingBreakdown": {
+      "hookWarmUp": "5 minutes",
+      "activatePriorKnowledge": "7 minutes",
+      "explicitTeachingModeling": "5 minutes",
+      "guidedPractice": "3 minutes",
+      "collaborativePractice": "15 minutes",
+      "independentPractice": "5 minutes",
+      "closureReflection": "3 minutes",
+      "exitTicket": "2 minutes",
+      "totalTime": "45 minutes",
+      "bufferNotes": "If lesson runs short, extend collaborative practice or add a quick gallery walk of station responses. If running long, compress closure and collect exit tickets as students leave. Flex day allows adaptive pacing."
+    },
+    "checkingForUnderstandingQuestions": [
+      "Which writing strategy did you find most useful today, and why?",
+      "Can you explain the difference between revising and editing to your partner?",
+      "What makes feedback helpful versus unhelpful?",
+      "How do you know if your thesis statement is strong?",
+      "What is one thing you will do differently in your next writing assignment?",
+      "Which station was most challenging for your team, and how did you work through it?",
+      "How does knowing your audience change the way you write?"
+    ],
+    "crossCurricularRealWorldConnections": [
+      "Reading: Analyzing mentor texts for structure and craft mirrors close reading strategies used in literature classes.",
+      "Oral Communication: Peer feedback protocols build discussion skills applicable to any collaborative setting.",
+      "Mathematics: Step-by-step problem solving at each station mirrors mathematical process skills.",
+      "Science: Revision and hypothesis testing parallel the scientific method of refining explanations based on evidence.",
+      "Real World: Professional writers, journalists, and content creators use peer review and revision cycles daily.",
+      "College Readiness: Self-assessment and goal-setting skills prepare students for independent work in higher education."
+    ],
+    "classroomManagementConsiderations": {
+      "groupingStrategy": "Pre-assigned teams of 3-4 mixed ability levels. Roles assigned: timekeeper, recorder, materials manager, reporter. Rotate roles if time permits.",
+      "transitionPlan": "Use a consistent signal (chime or countdown) for station rotations. Students leave materials at station and move clockwise. Visual timer projected for all to see.",
+      "noiseLevelExpectations": "Station work: level 3 (group voice). Closure and exit ticket: level 1 (silent). Post expectations visibly and reference as needed.",
+      "contingencyPlans": "If a station finishes early: extension task card available. If technology fails: printed instructions at each station as backup. If student is absent from team: redistribute roles or teacher joins as temporary team member."
+    },
+    "homeworkFollowUp": {
+      "assignment": "Review self-assessment reflection and select one writing strategy to focus on during next independent writing task. Write a brief paragraph (5-7 sentences) applying that strategy intentionally. Bring to next class for quick peer check-in.",
+      "purpose": "Connects directly to personal goal-setting from today's lesson. Reinforces strategy application in authentic writing context. No busy work; homework is purposeful and tied to student-identified growth area.",
+      "followUpPlan": "Next class begins with 3-minute peer check-in: partners read each other's paragraph and identify the targeted strategy. Teacher collects paragraphs for quick scan to assess strategy application and plan any needed mini-lessons."
+    },
+    "teacherReflection": {
+      "postLessonQuestions": [
+        "Which stations engaged students most effectively, and which need revision?",
+        "Did the timing allow for meaningful work at each station, or were some rushed?",
+        "Which students demonstrated strong strategy knowledge, and which need targeted support?",
+        "How well did the TAG peer feedback protocol work, and do students need more modeling?",
+        "What patterns emerged in exit ticket responses that should inform future instruction?",
+        "Was the flex-day format effective for review, or should future flex days use a different structure?"
+      ],
+      "dataCollectionNotes": "Collect exit tickets and sort by strategy mentioned. Note students who could not name a strategy for follow-up. Record observation notes on collaboration quality and station accuracy. Use this data to plan small-group reteaching sessions or adjust pacing for upcoming units.",
+      "adjustmentForNextFlexDay": "Consider adding a student-choice station where students select which strategy to practice. Build in more explicit modeling of TAG feedback if quality was inconsistent. Evaluate whether 3.5 minutes per station was sufficient or if fewer stations with more depth would be more effective."
+    }
+  }
+}
