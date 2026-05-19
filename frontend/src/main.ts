@@ -1,4 +1,5 @@
-﻿import './style.css';
+import './style.css';
+import './animations';
 import 'flag-icons/css/flag-icons.min.css';
 import type {
   Page, ClassTab, CalendarMode, ClassCalendarMode, LessonExportScope, LessonExportFormat,
@@ -71,6 +72,40 @@ type PersistedSyllabusState = {
 };
 
 const SYLLABUS_STATE_STORAGE_KEY = 'edutrack.syllabusPlanning.v1';
+const REQUIRED_STARTUP_TOOL_KEYS = ['opencode', 'tesseract', 'whisper', 'pandoc'] as const;
+
+type StartupToolStatus = 'pending' | 'installing' | 'available' | 'failed';
+
+type StartupInstallTool = {
+  key: string;
+  label: string;
+  status: StartupToolStatus;
+  progress: number;
+  detail: string;
+};
+
+type StartupGatePhase = 'checking' | 'installing' | 'verifying' | 'failed' | 'ready';
+
+const startupInstallGate: {
+  active: boolean;
+  busy: boolean;
+  phase: StartupGatePhase;
+  message: string;
+  tools: StartupInstallTool[];
+} = {
+  active: false,
+  busy: false,
+  phase: 'checking',
+  message: 'Checking required tools...',
+  tools: REQUIRED_STARTUP_TOOL_KEYS.map((key) => ({
+    key,
+    label: startupToolLabel(key),
+    status: 'pending',
+    progress: 6,
+    detail: 'Waiting to check availability.',
+  })),
+};
+
 const lessonExportSelection = new Set<string>();
 const sortedCountryChoices = countryCodes
   .map((code) => ({ code, name: countryName(code) ?? code }))
@@ -382,6 +417,248 @@ function applySyllabusPlanningStateForCurrentContext(clearIfMissing = true) {
   state.syllabusExtractionDiagnostics = null;
 }
 
+function startupToolLabel(key: string) {
+  switch (key) {
+    case 'opencode': return 'OpenCode CLI';
+    case 'tesseract': return 'Tesseract OCR';
+    case 'whisper': return 'Whisper CLI';
+    case 'pandoc': return 'Pandoc';
+    default: return key;
+  }
+}
+
+function truncateText(value: string, maxChars: number) {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 1)).trimEnd()}...`;
+}
+
+function summarizeStartupToolDetail(raw: string, key?: string) {
+  const normalized = raw
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return 'No additional details provided.';
+  const lower = normalized.toLowerCase();
+  if (lower.includes('unicodeencodeerror') && lower.includes('cp1252')) {
+    return 'Whisper CLI is installed, but the help output cannot render in the current Windows code page. Transcription can still work for normal runs.';
+  }
+  if (key === 'pandoc' && lower.includes('not found in path')) {
+    return 'Pandoc is missing from PATH. Install it or restart EduTrack after installation so PATH changes are visible.';
+  }
+  if (key === 'tesseract' && lower.includes('not found in path')) {
+    return 'Tesseract is missing from PATH. Install it or restart EduTrack after installation so PATH changes are visible.';
+  }
+  if (lower.includes('traceback')) {
+    return truncateText(normalized, 220);
+  }
+  return truncateText(normalized, 220);
+}
+
+function startupToolProgressByStatus(status: StartupToolStatus) {
+  switch (status) {
+    case 'available': return 100;
+    case 'installing': return 64;
+    case 'failed': return 100;
+    default: return 12;
+  }
+}
+
+function startupGateProgress() {
+  const total = startupInstallGate.tools.length || 1;
+  const completed = startupInstallGate.tools.filter((tool) => tool.status === 'available').length;
+  return {
+    total,
+    completed,
+    percent: Math.round((completed / total) * 100),
+  };
+}
+
+function syncStartupGateFromDiagnostics(diagnostics: GradingDiagnostics | null) {
+  for (const tool of startupInstallGate.tools) {
+    const diagnostic = diagnostics?.tools.find((entry) => entry.key === tool.key);
+    if (!diagnostic) {
+      if (tool.status !== 'failed') {
+        tool.status = 'pending';
+        tool.progress = startupToolProgressByStatus('pending');
+        tool.detail = 'Not verified yet.';
+      }
+      continue;
+    }
+    if (diagnostic.available) {
+      tool.status = 'available';
+      tool.progress = startupToolProgressByStatus('available');
+      tool.detail = summarizeStartupToolDetail(diagnostic.detail, tool.key);
+      continue;
+    }
+    if (tool.status !== 'installing' && tool.status !== 'failed') {
+      tool.status = 'pending';
+      tool.progress = startupToolProgressByStatus('pending');
+      tool.detail = summarizeStartupToolDetail(diagnostic.detail, tool.key);
+    }
+  }
+}
+
+function startupGateStatusLabel(status: StartupToolStatus) {
+  switch (status) {
+    case 'available': return 'AVAILABLE';
+    case 'installing': return 'INSTALLING';
+    case 'failed': return 'FAILED';
+    default: return 'PENDING';
+  }
+}
+
+function renderStartupInstallGate() {
+  const { total, completed, percent } = startupGateProgress();
+  const canRetry = startupInstallGate.phase === 'failed' && !startupInstallGate.busy;
+  return `
+    <section class="startup-gate">
+      <div class="startup-gate-layout">
+        <article class="startup-gate-card">
+          <p class="eyebrow">Startup Checks</p>
+          <h2>Preparing EduTrack</h2>
+          <p class="startup-gate-message">${escapeHtml(startupInstallGate.message)}</p>
+          <div class="startup-gate-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">
+            <span class="startup-gate-progress-fill" style="width:${percent}%"></span>
+          </div>
+          <p class="startup-gate-meta">${completed} of ${total} required tools ready (${percent}%)</p>
+          <div class="startup-gate-tools">
+            ${startupInstallGate.tools.map((tool) => `
+              <article class="startup-tool-row">
+                <div class="startup-tool-head">
+                  <strong>${escapeHtml(tool.label)}</strong>
+                  <span class="startup-tool-status ${tool.status}">${startupGateStatusLabel(tool.status)}</span>
+                </div>
+                <div class="startup-tool-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${tool.progress}">
+                  <span class="startup-tool-progress-fill ${tool.status}" style="width:${tool.progress}%"></span>
+                </div>
+                <p class="startup-tool-detail">${escapeHtml(tool.detail)}</p>
+              </article>
+            `).join('')}
+          </div>
+          ${startupInstallGate.phase === 'failed' ? '<p class="startup-gate-failure">Install failed for one or more tools. You can retry now or continue and install missing tools later from Settings.</p>' : ''}
+          <div class="startup-gate-actions">
+            <button class="primary-button" type="button" data-startup-install-retry ${canRetry ? '' : 'disabled'}>${icon('upload')} Retry install</button>
+            ${canRetry ? '<button class="ghost-button" type="button" data-startup-continue-limited>Continue with limited features</button>' : ''}
+          </div>
+        </article>
+        <aside class="startup-gate-brand" aria-hidden="true">
+          <img src="/logo.png" alt="" class="startup-gate-logo" />
+        </aside>
+      </div>
+    </section>
+  `;
+}
+
+function bindStartupInstallGateEvents() {
+  document.querySelector<HTMLButtonElement>('[data-startup-install-retry]')?.addEventListener('click', () => {
+    void runStartupInstallGate();
+  });
+  document.querySelector<HTMLButtonElement>('[data-startup-continue-limited]')?.addEventListener('click', () => {
+    startupInstallGate.active = false;
+    startupInstallGate.busy = false;
+    render();
+  });
+}
+
+async function runStartupInstallGate() {
+  if (!state.backend || startupInstallGate.busy) return;
+
+  startupInstallGate.active = true;
+  startupInstallGate.busy = true;
+  startupInstallGate.phase = 'checking';
+  startupInstallGate.message = 'Checking required tools...';
+  for (const tool of startupInstallGate.tools) {
+    if (tool.status !== 'available') {
+      tool.status = 'pending';
+      tool.progress = startupToolProgressByStatus('pending');
+      tool.detail = 'Waiting to check availability.';
+    }
+  }
+  render();
+  await waitForPaint();
+
+  await refreshGradingDiagnostics();
+  syncStartupGateFromDiagnostics(state.gradingDiagnostics);
+  render();
+  await waitForPaint();
+
+  const requiredKeys = [...REQUIRED_STARTUP_TOOL_KEYS];
+  for (const key of requiredKeys) {
+    const target = startupInstallGate.tools.find((tool) => tool.key === key);
+    if (!target || target.status === 'available') continue;
+
+    startupInstallGate.phase = 'installing';
+    target.status = 'installing';
+    target.progress = startupToolProgressByStatus('installing');
+    target.detail = `Installing ${target.label}...`;
+    startupInstallGate.message = `Installing ${target.label}...`;
+    render();
+    await waitForPaint();
+
+    try {
+      const result = await invoke<GradingToolInstallResult>('install_grading_tools', { toolKeys: [key] });
+      if (result?.installed?.includes(key)) {
+        state.gradingToolInstallNotes[key] = 'Installed successfully.';
+      } else if (result?.alreadyAvailable?.includes(key)) {
+        state.gradingToolInstallNotes[key] = 'Already available.';
+      } else {
+        const failed = result?.failed?.find((item) => item.key === key);
+        const note = (result?.notes ?? []).find((line) => line.toLowerCase().includes(key));
+        const detail = summarizeStartupToolDetail(note || failed?.detail || 'Install attempt failed.', key);
+        target.status = 'failed';
+        target.progress = startupToolProgressByStatus('failed');
+        target.detail = detail;
+        state.gradingToolInstallNotes[key] = detail;
+      }
+    } catch (error) {
+      const detail = summarizeStartupToolDetail(error instanceof Error ? error.message : String(error), key);
+      target.status = 'failed';
+      target.progress = startupToolProgressByStatus('failed');
+      target.detail = detail;
+      state.gradingToolInstallNotes[key] = detail;
+    }
+
+    startupInstallGate.phase = 'verifying';
+    target.progress = Math.max(target.progress, 82);
+    if (target.status !== 'failed') {
+      target.detail = `Verifying ${target.label} installation...`;
+    }
+    startupInstallGate.message = `Verifying ${target.label}...`;
+    await refreshGradingDiagnostics();
+    syncStartupGateFromDiagnostics(state.gradingDiagnostics);
+    const verified = startupInstallGate.tools.find((tool) => tool.key === key);
+    if (verified && verified.status !== 'available' && verified.status !== 'failed') {
+      verified.status = 'failed';
+      verified.progress = startupToolProgressByStatus('failed');
+      verified.detail = summarizeStartupToolDetail(
+        verified.detail || `${verified.label} is still missing after install attempt.`,
+        verified.key,
+      );
+      state.gradingToolInstallNotes[key] = verified.detail;
+    }
+    render();
+    await waitForPaint();
+  }
+
+  await refreshGradingDiagnostics();
+  syncStartupGateFromDiagnostics(state.gradingDiagnostics);
+  const unresolved = startupInstallGate.tools.filter((tool) => tool.status !== 'available');
+  if (unresolved.length === 0) {
+    startupInstallGate.phase = 'ready';
+    startupInstallGate.message = 'All required tools are installed.';
+    startupInstallGate.active = false;
+    startupInstallGate.busy = false;
+    render();
+    return;
+  }
+
+  startupInstallGate.phase = 'failed';
+  startupInstallGate.message = `${unresolved.length} required tool${unresolved.length === 1 ? '' : 's'} still unavailable.`;
+  startupInstallGate.busy = false;
+  startupInstallGate.active = true;
+  render();
+}
+
 async function loadInitialData() {
   state.backend = Boolean(invoke<unknown>('initialize_db'));
   if (!state.backend) {
@@ -435,6 +712,20 @@ async function loadInitialData() {
     state.message = String(error);
   } finally {
     state.loading = false;
+    if (state.backend) {
+      startupInstallGate.active = false;
+      startupInstallGate.phase = 'checking';
+      startupInstallGate.message = 'Checking required tools...';
+      for (const tool of startupInstallGate.tools) {
+        if (tool.status !== 'available') {
+          tool.status = 'pending';
+          tool.progress = startupToolProgressByStatus('pending');
+          tool.detail = 'Waiting to check availability.';
+        }
+      }
+      await refreshGradingDiagnostics();
+      syncStartupGateFromDiagnostics(state.gradingDiagnostics);
+    }
     render();
   }
 }
@@ -583,6 +874,12 @@ function teacherAvatar(className: string) {
 }
 
 function render() {
+  if (startupInstallGate.active) {
+    root.innerHTML = renderStartupInstallGate();
+    bindStartupInstallGateEvents();
+    return;
+  }
+
   if (state.loading) {
     shell(`<section class="hero-panel"><h2>Loading EduTrack</h2><p>Reading local workspace data.</p></section>`);
     return;
@@ -1157,7 +1454,6 @@ function renderSyllabus() {
   if (!state.selectedClassId) detailedPlanBlockers.push('Select a class in the Syllabus filters.');
   if (nonBufferLessons().length === 0) detailedPlanBlockers.push('Generate a lesson schedule first.');
   if (!state.llmConfig?.available) detailedPlanBlockers.push('Connect and save a local model in Settings.');
-  if (isCloudBackedModel(state.llmConfig?.model)) detailedPlanBlockers.push('Selected model is cloud/quota-limited. Switch to a local Ollama model (for example `llama3.1:latest` or `qwen3.5:4b`).');
   const progressPercent = detailedPlanProgressPercent();
   return `
     <section class="syllabus-page">
@@ -1236,6 +1532,10 @@ function syllabusReviewList(canGenerateDetailed: boolean, canAttachDetailed: boo
       `).join('')}</div>
       <div class="syllabus-review-footer">
         <button id="generate-reviewed-plan" class="primary-button" type="button">${icon('book')} Generate Lesson Schedule</button>
+        <div class="schedule-options-row">
+          <label class="unit-meta-field"><span>Buffer %</span><input id="schedule-buffer-percent" type="number" min="0" max="25" step="1" value="8" title="Percentage of teaching days reserved as buffer/reteach days" /></label>
+          <label class="unit-meta-field"><span>Pacing</span><select id="schedule-pacing-mode" title="Controls how lessons are distributed across the calendar"><option value="balanced" selected>Balanced</option><option value="front_loaded">Front-loaded</option><option value="back_loaded">Back-loaded</option></select></label>
+        </div>
         <button id="syllabus-generate-detailed-plans" class="ghost-button" type="button" ${canGenerateDetailed ? '' : 'disabled'}>${state.lessonPlansBusy ? '<span class="spinner"></span>' : icon('cpu')} ${state.lessonPlansBusy ? 'Generating...' : 'Generate Detailed Lesson Plans'}</button>
         <button id="syllabus-attach-detailed-plans" class="ghost-button" type="button" ${canAttachDetailed ? '' : 'disabled'}>${icon('calendar')} Attach Detailed Plans to Calendar Lessons</button>
       </div>
@@ -1757,8 +2057,7 @@ async function generateDetailedPlansFromSyllabus() {
     return;
   }
   if (isCloudBackedModel(state.llmConfig?.model)) {
-    showToast('Selected model is cloud/quota-limited. Switch to a local Ollama model in Settings first.');
-    return;
+    showToast('Note: Using a cloud/quota-limited model. Generation may be slower due to rate-limit pacing.');
   }
   const lessons = nonBufferLessons();
   const flexLessons = sortedGeneratedLessons().filter((lesson) => lesson.isBuffer);
@@ -1899,10 +2198,15 @@ async function generateDetailedPlansFromSyllabus() {
     state.detailedPlanProgressMessage = 'Finalising yearly lesson plan set';
     await renderDetailedPlanProgressTick();
     await loadAllCalendarLessons(state);
-      await loadAllCalendarSessions(state);
+    await loadAllCalendarSessions(state);
+    try {
+      await invoke<AttachDetailedPlansResult>('attach_detailed_plans_to_calendar_lessons', {
+        classId: state.selectedClassId,
+      });
+    } catch { /* auto-attach is best-effort */ }
     state.planMessage = options.createFlexActivities
       ? `Flex-day activity plans generated for ${sortedLessons.length} flex days. These days remain marked as flex and can still be replaced by rescheduled missed lessons.`
-      : `Detailed lesson plans generated for ${sortedLessons.length} lessons. You can now attach them to the classroom calendar.`;
+      : `Detailed lesson plans generated and attached for ${sortedLessons.length} lessons.`;
     persistSyllabusPlanningState();
     showToast(options.createFlexActivities ? 'Flex-day activity plans generated and saved successfully.' : 'Detailed lesson plans generated and saved successfully.');
   } catch (error) {
@@ -1936,7 +2240,7 @@ async function attachDetailedPlansToCalendar() {
     }
     await loadClassData(state);
     await loadAllCalendarLessons(state);
-      await loadAllCalendarSessions(state);
+    await loadAllCalendarSessions(state);
     state.planMessage = `Attached ${result?.attachedCount ?? 0} detailed lesson plans to calendar lessons${(result?.alreadyAttachedCount ?? 0) > 0 ? ` (${result?.alreadyAttachedCount ?? 0} were already attached)` : ''}.`;
     persistSyllabusPlanningState();
     render();
@@ -2639,7 +2943,7 @@ function renderSettings() {
               : '';
             const installNote = state.gradingToolInstallNotes[tool.key] ?? '';
             const installNoteHtml = installNote ? `<p class="settings-detail" style="margin-top:2px;color:var(--ink-strong)"><strong>Installer:</strong> ${escapeHtml(installNote)}</p>` : '';
-            return `<div class="diag-row"><strong>${escapeHtml(tool.label)}</strong><div style="display:flex;align-items:center;gap:8px;justify-content:flex-end"><span class="test-row-status ${tool.available ? 'completed' : 'pending'}">${tool.available ? 'Available' : 'Missing'}</span>${installButton}</div><p>${escapeHtml(tool.detail)}</p>${installNoteHtml}</div>`;
+            return `<div class="diag-row"><strong>${escapeHtml(tool.label)}</strong><div style="display:flex;align-items:center;gap:8px;justify-content:flex-end"><span class="test-row-status ${tool.available ? 'completed' : 'pending'}">${tool.available ? 'Available' : 'Missing'}</span>${installButton}</div><p>${escapeHtml(summarizeStartupToolDetail(tool.detail, tool.key))}</p>${installNoteHtml}</div>`;
           }).join('')}</div>
           <div class="diag-storage">
             <p><strong>Storage root:</strong> ${escapeHtml(diagnostics.storageRoot)}</p>
@@ -2690,7 +2994,7 @@ async function installMissingGradingTools() {
       } else {
         const failed = result?.failed?.find((item) => item.key === key);
         const note = (result?.notes ?? []).find((line) => line.toLowerCase().includes(key.toLowerCase()));
-        state.gradingToolInstallNotes[key] = failed?.detail || note || 'Install attempt failed.';
+        state.gradingToolInstallNotes[key] = summarizeStartupToolDetail(note || failed?.detail || 'Install attempt failed.', key);
       }
     }
     await refreshGradingDiagnostics();
@@ -2731,8 +3035,9 @@ async function installSingleGradingTool(toolKey: string, label: string) {
       return;
     }
     if (failed) {
-      state.gradingToolInstallNotes[toolKey] = notePreview || failed.detail;
-      showToast(`${label} install failed: ${notePreview || failed.detail}`);
+      const detail = summarizeStartupToolDetail(notePreview || failed.detail, toolKey);
+      state.gradingToolInstallNotes[toolKey] = detail;
+      showToast(`${label} install failed: ${detail}`);
       return;
     }
     state.gradingToolInstallNotes[toolKey] = 'Install completed. Re-run checks to confirm status.';
@@ -3398,7 +3703,11 @@ function bindPageEvents() {
       } catch {
         showToast('Public holiday sync failed. Continuing with existing calendar closure days.');
       }
-      const plan = await invoke<YearPlanBundle>('generate_year_plan', { options: { levelId, classId, syllabusId: state.currentSyllabusId, calendarId, bufferDaysPercent: 0.08, pacingMode: 'balanced' } });
+      const bufferInput = document.querySelector<HTMLInputElement>('#schedule-buffer-percent');
+      const pacingInput = document.querySelector<HTMLSelectElement>('#schedule-pacing-mode');
+      const bufferPercent = bufferInput ? Math.max(0, Math.min(25, Number(bufferInput.value) || 8)) / 100 : 0.08;
+      const pacingMode = pacingInput?.value || 'balanced';
+      const plan = await invoke<YearPlanBundle>('generate_year_plan', { options: { levelId, classId, syllabusId: state.currentSyllabusId, calendarId, bufferDaysPercent: bufferPercent, pacingMode } });
       state.generatedLessons = plan?.lessons ?? [];
       state.planMessage = `${plan?.yearPlan.generationSummary ?? `Generated ${state.generatedLessons.length} scheduled lessons.`} ${holidayNotice}`;
       if (plan?.warnings.length) state.planMessage = `${state.planMessage} ${plan.warnings.join(' ')}`;

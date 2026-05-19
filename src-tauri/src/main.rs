@@ -16,6 +16,7 @@ fn main() {
             std::fs::create_dir_all(&app_data).map_err(|e| e.to_string())?;
             let db = Database::new(app_data.join("edutrack.db"), &app_data)?;
             app.manage(Arc::new(db));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -40,6 +40,21 @@ function Test-FileLocked($Path) {
   }
 }
 
+function Clear-StaleCargoIncremental() {
+  $incrementalDir = Join-Path $CargoTargetDir "debug\incremental"
+  if (-not (Test-Path $incrementalDir)) {
+    return
+  }
+  try {
+    Get-ChildItem -Path $incrementalDir -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -like "tauri_app-*" } |
+      Remove-Item -Recurse -Force -ErrorAction Stop
+    Write-Step "Cleared stale Rust incremental cache for tauri-app."
+  } catch {
+    Write-Step "Could not fully clear incremental cache. Continuing with existing cache."
+  }
+}
+
 function Get-PortOwner($PortNumber) {
   $line = netstat -ano | Select-String "127\.0\.0\.1:$PortNumber\s+.*LISTENING" | Select-Object -First 1
   if (-not $line) {
@@ -162,11 +177,13 @@ if (-not $Browser) {
     throw "App binary is locked before startup. Configure AVG exceptions, then rerun .\\run.bat."
   }
 
+  Clear-StaleCargoIncremental
+
   Write-Step "Using stable Rust target directory: $CargoTargetDir"
-  $TauriCommand = "cd '$Tauri'; `$env:CARGO_TARGET_DIR='$CargoTargetDir'; `$env:CARGO_HTTP_CHECK_REVOKE='false'; cargo tauri dev --no-watch"
+  $TauriCommand = "cd '$Tauri'; `$env:CARGO_TARGET_DIR='$CargoTargetDir'; `$env:CARGO_HTTP_CHECK_REVOKE='false'; `$env:CARGO_INCREMENTAL='0'; cargo tauri dev --no-watch"
   if (Test-EduTrackUi $DesktopPort) {
     $ExistingConfig = Join-Path $Tauri "tauri.dev-existing.conf.json"
-    $TauriCommand = "cd '$Tauri'; `$env:CARGO_TARGET_DIR='$CargoTargetDir'; `$env:CARGO_HTTP_CHECK_REVOKE='false'; cargo tauri dev --no-watch --config '$ExistingConfig'"
+    $TauriCommand = "cd '$Tauri'; `$env:CARGO_TARGET_DIR='$CargoTargetDir'; `$env:CARGO_HTTP_CHECK_REVOKE='false'; `$env:CARGO_INCREMENTAL='0'; cargo tauri dev --no-watch --config '$ExistingConfig'"
     Write-Step "Reusing existing EduTrack dev server at http://127.0.0.1:$DesktopPort."
   }
 

@@ -3,3 +3,6 @@
 *.db
 /.dev-cache/
 src-tauri/target/
+lesson-plan.json
+src-tauri/lesson-plan.json
+src-tauri/backward-design-lesson-plan.json

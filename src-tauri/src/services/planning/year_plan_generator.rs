@@ -1,4 +1,4 @@
-﻿use crate::services::hierarchy::{
+use crate::services::hierarchy::{
     get_class, get_level, new_id, now, CurriculumUnit, DbState, YearPlan, YearPlanLesson,
 };
 use crate::services::planning::calendar_service::{
@@ -121,6 +121,9 @@ fn cloud_generation_cooldown(
 }
 
 fn is_cloud_backed_model(llm_config: &crate::services::llm_service::LocalModelConfig) -> bool {
+    if llm_config.provider == "opencode" {
+        return true;
+    }
     let model = llm_config.model.to_ascii_lowercase();
     model.contains(":cloud") || model.contains("-cloud")
 }
@@ -516,8 +519,8 @@ pub async fn generate_year_plan(
         let buffer_days = ((teachable_dates.len() as f64) * buffer_percent).round() as usize;
         let instruction_slots = teachable_dates.len().saturating_sub(buffer_days).max(1);
         if requested_lessons > instruction_slots {
-            return Err(format!(
-                "Cannot generate an accurate schedule: syllabus requires {requested_lessons} lessons but only {instruction_slots} instructional days are available after reserving {buffer_days} buffer day(s). Reduce unit lesson estimates, reduce buffer, or extend class dates."
+            warnings.push(format!(
+                "Syllabus requests {requested_lessons} lessons but only {instruction_slots} instructional days are available after reserving {buffer_days} buffer day(s). Lesson counts have been proportionally scaled to fit."
             ));
         }
         if class_closures_skipped > 0 {
@@ -529,12 +532,19 @@ pub async fn generate_year_plan(
         let (allocated_per_unit, required_dropped, optional_dropped) =
             allocate_lessons_per_unit(&units, &requested_per_unit, instruction_slots);
         let allocated_total: usize = allocated_per_unit.iter().sum();
-        if required_dropped > 0 || optional_dropped > 0 {
-            return Err("could not allocate at least one lesson to every syllabus unit. Review class calendar capacity and syllabus unit estimates.".to_string());
+        if required_dropped > 0 {
+            warnings.push(format!(
+                "{required_dropped} required unit(s) could not be scheduled. Review class calendar capacity and syllabus unit estimates."
+            ));
         }
-        if allocated_total != requested_lessons {
-            return Err(format!(
-                "allocation mismatch: requested {requested_lessons} lessons but allocated {allocated_total}. Review syllabus estimates."
+        if optional_dropped > 0 {
+            warnings.push(format!(
+                "{optional_dropped} optional unit(s) were dropped to fit available instruction days."
+            ));
+        }
+        if allocated_total != requested_lessons && allocated_total > 0 {
+            warnings.push(format!(
+                "Lesson count adjusted from {requested_lessons} requested to {allocated_total} scheduled to fit available calendar days."
             ));
         }
         let dropped_units = required_dropped + optional_dropped;
@@ -993,9 +1003,12 @@ pub async fn generate_detailed_lesson_plans(
     let timestamp = now();
     state.with_conn(|conn| {
         for (lesson_id, objective) in &results {
+            let is_detailed = serde_json::from_str::<serde_json::Value>(objective)
+                .map(|v| v.get("v").and_then(|v| v.as_str()) == Some("1"))
+                .unwrap_or(false);
             conn.execute(
-                "UPDATE year_plan_lessons SET lesson_objective = ?1, updated_at = ?2 WHERE id = ?3",
-                params![objective, timestamp, lesson_id],
+                "UPDATE year_plan_lessons SET lesson_objective = ?1, detailed_plan_attached = ?2, updated_at = ?3 WHERE id = ?4",
+                params![objective, is_detailed, timestamp, lesson_id],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -1082,11 +1095,14 @@ pub async fn generate_detailed_lesson_plan_for_lesson(
         )
     })?;
 
+    let is_detailed = serde_json::from_str::<serde_json::Value>(&objective)
+        .map(|v| v.get("v").and_then(|v| v.as_str()) == Some("1"))
+        .unwrap_or(false);
     let timestamp = now();
     state.with_conn(|conn| {
         conn.execute(
-            "UPDATE year_plan_lessons SET lesson_objective = ?1, updated_at = ?2 WHERE id = ?3",
-            params![objective, timestamp, lesson.id],
+            "UPDATE year_plan_lessons SET lesson_objective = ?1, detailed_plan_attached = ?2, updated_at = ?3 WHERE id = ?4",
+            params![objective, is_detailed, timestamp, lesson.id],
         )
         .map_err(|e| e.to_string())?;
         let plan_id = class.year_plan_id.ok_or_else(|| "No year plan linked".to_string())?;
@@ -1370,11 +1386,11 @@ fn should_use_fallback_plan(errors: &[String]) -> bool {
 
 fn allow_fallback_detailed_plans() -> bool {
     let Ok(value) = std::env::var("EDUTRACK_ALLOW_FALLBACK_DETAILED_PLANS") else {
-        return false;
+        return true;
     };
-    matches!(
+    !matches!(
         value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
+        "0" | "false" | "no" | "off"
     )
 }
 

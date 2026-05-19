@@ -4,6 +4,7 @@ use crate::services::llm_service::{
 };
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -433,12 +434,18 @@ pub async fn install_grading_tools(
         return Err("No supported tool keys requested. Supported keys: opencode, tesseract, whisper, pandoc".to_string());
     }
 
+    Ok(run_grading_tool_install_pass(&requested))
+}
+
+fn run_grading_tool_install_pass(requested: &[String]) -> GradingToolInstallResult {
+    let requested_vec = requested.to_vec();
+
     let mut installed = Vec::new();
     let mut already_available = Vec::new();
     let mut failed = Vec::new();
     let mut notes = Vec::new();
 
-    for key in &requested {
+    for key in &requested_vec {
         let label = tool_label(key);
         let probe_before = probe_tool(key, label, tool_probe_args(key));
         if probe_before.available {
@@ -463,18 +470,18 @@ pub async fn install_grading_tools(
         }
     }
 
-    let post_checks = requested
+    let post_checks = requested_vec
         .iter()
         .map(|key| probe_tool(key, tool_label(key), tool_probe_args(key)))
         .collect();
 
-    Ok(GradingToolInstallResult {
+    GradingToolInstallResult {
         installed,
         already_available,
         failed,
         notes,
         post_checks,
-    })
+    }
 }
 
 #[tauri::command]
@@ -803,15 +810,14 @@ fn extract_image_text_with_tesseract_cli(path: &str) -> Result<String, String> {
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let output_base = out_dir.join("ocr_output");
 
-    let output = Command::new("tesseract")
+    let (mut tesseract_cmd, source_label) = command_for_tool("tesseract");
+    let output = tesseract_cmd
         .arg(path)
         .arg(output_base.to_string_lossy().to_string())
         .arg("-l")
         .arg("eng")
         .output()
-        .map_err(|e| {
-            format!("image OCR requires Tesseract CLI in PATH (command 'tesseract'): {e}")
-        })?;
+        .map_err(|e| format!("image OCR requires Tesseract ({source_label}): {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let _ = fs::remove_dir_all(&out_dir);
@@ -859,12 +865,13 @@ fn extract_word_document_text(path: &str, extension: &str) -> Result<String, Str
 }
 
 fn extract_with_pandoc(path: &str) -> Result<String, String> {
-    let output = Command::new("pandoc")
+    let (mut pandoc_cmd, source_label) = command_for_tool("pandoc");
+    let output = pandoc_cmd
         .arg(path)
         .arg("-t")
         .arg("plain")
         .output()
-        .map_err(|e| format!("pandoc not available: {e}"))?;
+        .map_err(|e| format!("pandoc not available ({source_label}): {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -932,24 +939,22 @@ fn transcribe_audio_with_whisper_cli(path: &str) -> Result<String, String> {
     let out_dir: PathBuf = std::env::temp_dir().join(format!("edutrack-whisper-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
 
-    let output = Command::new("whisper")
-        .arg(path)
-        .arg("--model")
-        .arg("base")
-        .arg("--output_format")
-        .arg("txt")
-        .arg("--output_dir")
-        .arg(&out_dir)
-        .output()
-        .map_err(|e| {
-            format!("audio transcription requires Whisper CLI in PATH (command 'whisper'): {e}")
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let whisper_output = run_whisper_transcription(path, &out_dir).map_err(|err| {
+        let _ = fs::remove_dir_all(&out_dir);
+        err
+    })?;
+    if !whisper_output.status.success() {
+        let stderr = String::from_utf8_lossy(&whisper_output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&whisper_output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
         let _ = fs::remove_dir_all(&out_dir);
         return Err(format!(
-            "audio transcription failed via Whisper CLI: {}",
-            stderr.trim()
+            "audio transcription failed via Whisper: {}",
+            if detail.is_empty() {
+                format!("process exited with {}", whisper_output.status)
+            } else {
+                detail
+            }
         ));
     }
 
@@ -1207,6 +1212,14 @@ fn install_tesseract_windows() -> Result<Vec<String>, String> {
     if try_winget_install("Tesseract-OCR.Tesseract", &mut notes).is_ok() {
         return Ok(notes);
     }
+    if !is_windows_elevated() {
+        notes.push("Current process is not elevated; skipping Chocolatey machine install.".to_string());
+        return Err(format!(
+            "Tesseract install needs Administrator privileges when winget is unavailable. {} Attempts: {}",
+            windows_manual_tool_hint("tesseract"),
+            notes.join(" | ")
+        ));
+    }
     if try_choco_install("tesseract", &mut notes).is_ok() {
         return Ok(notes);
     }
@@ -1218,6 +1231,14 @@ fn install_pandoc_windows() -> Result<Vec<String>, String> {
     let mut notes = Vec::new();
     if try_winget_install("JohnMacFarlane.Pandoc", &mut notes).is_ok() {
         return Ok(notes);
+    }
+    if !is_windows_elevated() {
+        notes.push("Current process is not elevated; skipping Chocolatey machine install.".to_string());
+        return Err(format!(
+            "Pandoc install needs Administrator privileges when winget is unavailable. {} Attempts: {}",
+            windows_manual_tool_hint("pandoc"),
+            notes.join(" | ")
+        ));
     }
     if try_choco_install("pandoc", &mut notes).is_ok() {
         return Ok(notes);
@@ -1340,6 +1361,10 @@ fn install_whisper_unix() -> Result<Vec<String>, String> {
 
 #[cfg(windows)]
 fn try_winget_install(package_id: &str, notes: &mut Vec<String>) -> Result<(), String> {
+    if !command_exists("winget") {
+        notes.push("winget not available in PATH".to_string());
+        return Err("winget not available in PATH".to_string());
+    }
     let args = [
         "install",
         "--id",
@@ -1359,6 +1384,10 @@ fn try_winget_install(package_id: &str, notes: &mut Vec<String>) -> Result<(), S
 
 #[cfg(windows)]
 fn try_choco_install(package_name: &str, notes: &mut Vec<String>) -> Result<(), String> {
+    if !command_exists("choco") {
+        notes.push("choco not available in PATH".to_string());
+        return Err("choco not available in PATH".to_string());
+    }
     let args = [
         "install",
         package_name,
@@ -1376,8 +1405,10 @@ fn try_choco_install(package_name: &str, notes: &mut Vec<String>) -> Result<(), 
 }
 
 fn run_command(command: &str, args: &[&str]) -> Result<(), String> {
-    let output = Command::new(command)
-        .args(args)
+    let mut cmd = Command::new(command);
+    cmd.args(args);
+    sanitize_poison_proxy_env(&mut cmd);
+    let output = cmd
         .output()
         .map_err(|e| format!("{command} not available: {e}"))?;
     if output.status.success() {
@@ -1391,6 +1422,55 @@ fn run_command(command: &str, args: &[&str]) -> Result<(), String> {
         } else {
             detail
         })
+    }
+}
+
+fn command_exists(command: &str) -> bool {
+    Command::new(command)
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+#[cfg(windows)]
+fn is_windows_elevated() -> bool {
+    let script = "$p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent()); if ($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 0 } else { exit 1 }";
+    Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn windows_manual_tool_hint(tool_key: &str) -> &'static str {
+    match tool_key {
+        "tesseract" => "Install manually from an elevated terminal: `winget install --id UB-Mannheim.TesseractOCR --exact`.",
+        "pandoc" => "Install manually from an elevated terminal: `winget install --id JohnMacFarlane.Pandoc --exact`.",
+        _ => "Install manually from an elevated terminal.",
+    }
+}
+
+fn sanitize_poison_proxy_env(cmd: &mut Command) {
+    let proxy_keys = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "GIT_HTTP_PROXY",
+        "GIT_HTTPS_PROXY",
+    ];
+    for key in proxy_keys {
+        if let Ok(value) = std::env::var(key) {
+            let lower = value.to_ascii_lowercase();
+            if lower.contains("127.0.0.1:9") || lower.contains("localhost:9") {
+                cmd.env_remove(key);
+            }
+        }
     }
 }
 
@@ -1452,6 +1532,90 @@ fn run_pip_install_whisper(notes: &mut Vec<String>) -> Result<(), String> {
     Err("no working pip command found".to_string())
 }
 
+fn tool_override_env_var(key: &str) -> Option<&'static str> {
+    match key {
+        "tesseract" => Some("EDUTRACK_TESSERACT_PATH"),
+        "pandoc" => Some("EDUTRACK_PANDOC_PATH"),
+        _ => None,
+    }
+}
+
+fn tool_binary_filename(key: &str) -> String {
+    #[cfg(windows)]
+    {
+        return format!("{key}.exe");
+    }
+    #[cfg(not(windows))]
+    {
+        key.to_string()
+    }
+}
+
+fn bundled_tool_candidates(key: &str) -> Vec<PathBuf> {
+    if !matches!(key, "tesseract" | "pandoc") {
+        return Vec::new();
+    }
+    let platform = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    let binary_name = tool_binary_filename(key);
+    let mut candidates = Vec::new();
+    let mut roots = Vec::new();
+
+    if let Ok(exe) = env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        roots.push(cwd.clone());
+        roots.push(cwd.join("src-tauri"));
+    }
+
+    for root in roots {
+        candidates.push(
+            root.join("resources")
+                .join("tools")
+                .join(platform)
+                .join(key)
+                .join(&binary_name),
+        );
+        candidates.push(
+            root.join("tools")
+                .join(platform)
+                .join(key)
+                .join(&binary_name),
+        );
+    }
+    candidates
+}
+
+fn resolve_bundled_tool(key: &str) -> Option<PathBuf> {
+    if let Some(var_name) = tool_override_env_var(key) {
+        if let Ok(raw_path) = env::var(var_name) {
+            let override_path = PathBuf::from(raw_path);
+            if override_path.exists() {
+                return Some(override_path);
+            }
+        }
+    }
+    bundled_tool_candidates(key)
+        .into_iter()
+        .find(|path| path.exists())
+}
+
+fn command_for_tool(key: &str) -> (Command, String) {
+    if let Some(path) = resolve_bundled_tool(key) {
+        let display = path.to_string_lossy().to_string();
+        return (Command::new(path), format!("bundled binary at {display}"));
+    }
+    (Command::new(key), "PATH".to_string())
+}
+
 fn probe_tool(key: &str, label: &str, args: &[&str]) -> GradingToolStatus {
     if key == "opencode" {
         return match probe_opencode_cli() {
@@ -1469,25 +1633,129 @@ fn probe_tool(key: &str, label: &str, args: &[&str]) -> GradingToolStatus {
             },
         };
     }
-    match Command::new(key).args(args).output() {
-        Ok(output) => {
-            let detail = first_non_empty_line(&String::from_utf8_lossy(&output.stdout))
-                .or_else(|| first_non_empty_line(&String::from_utf8_lossy(&output.stderr)))
-                .unwrap_or_else(|| format!("{key} command responded"));
-            GradingToolStatus {
+    if key == "whisper" {
+        return match probe_whisper_cli() {
+            Ok(detail) => GradingToolStatus {
                 key: key.to_string(),
                 label: label.to_string(),
                 available: true,
                 detail,
+            },
+            Err(err) => GradingToolStatus {
+                key: key.to_string(),
+                label: label.to_string(),
+                available: false,
+                detail: err,
+            },
+        };
+    }
+    let (mut tool_command, source_label) = command_for_tool(key);
+    match tool_command.args(args).output() {
+        Ok(output) => {
+            let detail = first_non_empty_line(&String::from_utf8_lossy(&output.stdout))
+                .or_else(|| first_non_empty_line(&String::from_utf8_lossy(&output.stderr)))
+                .unwrap_or_else(|| format!("{key} command responded ({source_label})"));
+            GradingToolStatus {
+                key: key.to_string(),
+                label: label.to_string(),
+                available: true,
+                detail: if detail.contains("bundled binary at") {
+                    detail
+                } else {
+                    format!("{detail} ({source_label})")
+                },
             }
         }
         Err(err) => GradingToolStatus {
             key: key.to_string(),
             label: label.to_string(),
             available: false,
-            detail: format!("{key} not found in PATH ({err})"),
+            detail: format!("{key} unavailable via {source_label} ({err})"),
         },
     }
+}
+
+fn run_whisper_transcription(path: &str, out_dir: &Path) -> Result<std::process::Output, String> {
+    let mut attempts = Vec::new();
+    let candidates: [(&str, &[&str]); 2] = [
+        (
+            "python",
+            &[
+                "-m",
+                "whisper",
+                path,
+                "--model",
+                "base",
+                "--output_format",
+                "txt",
+                "--output_dir",
+            ],
+        ),
+        (
+            "py",
+            &[
+                "-m",
+                "whisper",
+                path,
+                "--model",
+                "base",
+                "--output_format",
+                "txt",
+                "--output_dir",
+            ],
+        ),
+    ];
+
+    for (command, prefix_args) in candidates {
+        let mut cmd = Command::new(command);
+        cmd.args(prefix_args).arg(out_dir);
+        match cmd.output() {
+            Ok(output) => return Ok(output),
+            Err(err) => attempts.push(format!("{command}: {err}")),
+        }
+    }
+
+    Err(format!(
+        "audio transcription requires Whisper via one of: `python -m whisper`, `py -m whisper`. Attempts: {}",
+        attempts.join(" | ")
+    ))
+}
+
+fn probe_whisper_cli() -> Result<String, String> {
+    let candidates: [(&str, &[&str], &str); 2] = [
+        ("python", &["-m", "whisper", "--help"], "python -m whisper"),
+        ("py", &["-m", "whisper", "--help"], "py -m whisper"),
+    ];
+    let mut errors = Vec::new();
+    for (command, args, label) in candidates {
+        match Command::new(command).args(args).output() {
+            Ok(output) if output.status.success() => {
+                let detail = first_non_empty_line(&String::from_utf8_lossy(&output.stdout))
+                    .or_else(|| first_non_empty_line(&String::from_utf8_lossy(&output.stderr)))
+                    .unwrap_or_else(|| format!("{label} responded"));
+                return Ok(format!("{label}: {detail}"));
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let detail = if !stderr.is_empty() { stderr } else { stdout };
+                if looks_like_windows_cp1252_help_encoding_issue(&detail) {
+                    return Ok(format!(
+                        "{label}: detected (Windows console encoding issue while printing help text)"
+                    ));
+                }
+                errors.push(format!("{label} exited {}", output.status));
+                if !detail.is_empty() {
+                    errors.push(format!("{label} output: {}", truncate_with_ellipsis(&detail, 220)));
+                }
+            }
+            Err(err) => errors.push(format!("{label} not available ({err})")),
+        }
+    }
+    Err(format!(
+        "Whisper not available. Checked: python -m whisper, py -m whisper. {}",
+        truncate_with_ellipsis(&errors.join(" | "), 420)
+    ))
 }
 
 fn first_non_empty_line(text: &str) -> Option<String> {
@@ -1495,6 +1763,29 @@ fn first_non_empty_line(text: &str) -> Option<String> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(ToString::to_string)
+}
+
+fn truncate_with_ellipsis(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+    let mut truncated = String::new();
+    for (index, ch) in normalized.chars().enumerate() {
+        if index >= max_chars.saturating_sub(1) {
+            break;
+        }
+        truncated.push(ch);
+    }
+    format!("{truncated}...")
+}
+
+fn looks_like_windows_cp1252_help_encoding_issue(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    lower.contains("unicodeencodeerror")
+        && lower.contains("cp1252")
+        && lower.contains("argparse")
+        && lower.contains("whisper")
 }
 
 

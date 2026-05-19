@@ -109,6 +109,8 @@ Optional (for richer document/media extraction in grading flows):
 - `whisper` (audio transcription)
 - `pandoc` (DOC/DOCX extraction)
 
+EduTrack now auto-checks these on startup and will attempt to install missing tools automatically.
+
 ---
 
 ## 🧪 Local Development
@@ -118,6 +120,8 @@ Optional (for richer document/media extraction in grading flows):
 ```powershell
 .\run.bat
 ```
+
+On first run (or when tools are missing), EduTrack will auto-install grading dependencies in the background.
 
 ### 2) Doctor mode (if antivirus/file locks happen)
 

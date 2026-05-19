@@ -1786,6 +1786,667 @@ textarea { resize: vertical; font: inherit; }
 .report-student-head strong { font-size: 14px; color: var(--ink-strong); }
 .report-actions { display: flex; gap: 4px; }
 
+/* ===== STARTUP TOOL GATE ===== */
+
+.startup-gate {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: clamp(20px, 3vw, 40px);
+  background:
+    radial-gradient(1200px 700px at 15% 10%, rgba(184, 169, 232, 0.35), transparent 70%),
+    radial-gradient(1200px 800px at 85% 90%, rgba(125, 223, 194, 0.2), transparent 70%),
+    var(--bg);
+}
+
+.startup-gate-layout {
+  width: 100%;
+  max-width: 1080px;
+  display: grid;
+  grid-template-columns: minmax(360px, 560px) minmax(260px, 1fr);
+  align-items: stretch;
+  gap: clamp(18px, 2.5vw, 34px);
+}
+
+.startup-gate-card {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+  padding: clamp(18px, 3vw, 28px);
+  background: var(--glass-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
+  max-height: calc(100vh - 84px);
+  overflow-y: auto;
+}
+
+.startup-gate-message {
+  color: var(--ink-strong);
+  font-weight: 650;
+}
+
+.startup-gate-progress {
+  width: 100%;
+  height: 12px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  background: rgba(139, 135, 168, 0.2);
+  border: 1px solid rgba(139, 135, 168, 0.3);
+}
+
+.startup-gate-progress-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--mint), var(--sky));
+  transition: width var(--duration) var(--ease);
+}
+
+.startup-gate-meta {
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.startup-gate-tools {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.startup-tool-row {
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(139, 135, 168, 0.2);
+  background: rgba(255, 255, 255, 0.7);
+  display: grid;
+  gap: 8px;
+}
+
+.startup-tool-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.startup-tool-status {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  letter-spacing: 0.04em;
+}
+
+.startup-tool-status.pending {
+  background: var(--lavender-soft);
+  color: var(--muted-strong);
+}
+
+.startup-tool-status.installing {
+  background: var(--sky-soft);
+  color: #2f6ea2;
+}
+
+.startup-tool-status.available {
+  background: var(--mint-soft);
+  color: #1f8a69;
+}
+
+.startup-tool-status.failed {
+  background: var(--peach-soft);
+  color: #b2562e;
+}
+
+.startup-tool-row p {
+  color: var(--muted-strong);
+  margin: 0;
+  font-size: 13px;
+}
+
+.startup-tool-progress {
+  width: 100%;
+  height: 7px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  background: rgba(139, 135, 168, 0.18);
+}
+
+.startup-tool-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width var(--duration) var(--ease);
+  background: linear-gradient(90deg, rgba(139, 135, 168, 0.65), rgba(139, 135, 168, 0.45));
+}
+
+.startup-tool-progress-fill.installing {
+  background: linear-gradient(90deg, var(--sky), #87c3ed);
+}
+
+.startup-tool-progress-fill.available {
+  background: linear-gradient(90deg, #53caa6, var(--mint));
+}
+
+.startup-tool-progress-fill.failed {
+  background: linear-gradient(90deg, #e8926f, #d97850);
+}
+
+.startup-tool-detail {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.startup-gate-failure {
+  color: #b2562e;
+  font-weight: 650;
+}
+
+.startup-gate-actions {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.startup-gate-brand {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background:
+    radial-gradient(600px 320px at 50% 25%, rgba(255, 255, 255, 0.7), transparent 75%),
+    linear-gradient(165deg, rgba(255, 255, 255, 0.55), rgba(240, 236, 255, 0.35));
+  box-shadow: var(--shadow-md);
+  padding: clamp(18px, 2.4vw, 32px);
+}
+
+.startup-gate-logo {
+  width: clamp(280px, 34vw, 520px);
+  height: auto;
+  filter: drop-shadow(0 14px 28px rgba(45, 43, 78, 0.18));
+}
+
+/* =================================================================
+   MICRO-INTERACTIONS & ANIMATION ENGINE
+   ================================================================= */
+
+/* --- Ripple Effect (spawned by animations.ts) --- */
+.ripple-wave {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,0.45) 0%, transparent 70%);
+  transform: scale(0);
+  animation: ripple-expand 550ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  pointer-events: none;
+  z-index: 10;
+}
+@keyframes ripple-expand {
+  to { transform: scale(4); opacity: 0; }
+}
+
+/* --- Button & Interactive Press (Active) --- */
+.primary-button:active,
+.ghost-button:active,
+.danger-button:active,
+.segmented button:active,
+.compact-button:active {
+  transform: scale(0.94) translateY(0) !important;
+  transition-duration: 80ms !important;
+  box-shadow: none !important;
+}
+
+.nav-item:active {
+  transform: scale(0.96) translateX(0) !important;
+  transition-duration: 60ms !important;
+}
+
+/* --- Card Press / Tap --- */
+.metric-card:active,
+.agent-card:active,
+.student-card:active,
+.school-row:active,
+.syllabus-unit-card:active,
+.submission-card:active,
+.report-student-card:active,
+.test-row:active,
+.lesson-preview-row:active,
+.schedule-card:active,
+.context-chip:active,
+.pulse-item:active {
+  transform: scale(0.97) !important;
+  transition-duration: 80ms !important;
+}
+
+.class-pill:active,
+.filter-chip:active,
+.attendance-cell:active,
+.weekday-chip span:active,
+.lesson-status-chip:active {
+  transform: scale(0.88) !important;
+  transition-duration: 60ms !important;
+}
+
+/* --- Pulse Dot Breathing Animation --- */
+@keyframes pulse-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.4); opacity: 0.65; }
+}
+.pulse-item.ok .pulse-dot {
+  animation: pulse-breathe 2.2s ease-in-out infinite;
+}
+.pulse-item.warn .pulse-dot {
+  animation: pulse-breathe 1.6s ease-in-out infinite;
+}
+
+/* --- Hero Panel Ambient Gradient --- */
+.hero-panel {
+  background-size: 200% 200%;
+  animation: hero-gradient-shift 8s ease infinite;
+}
+@keyframes hero-gradient-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* --- Sidebar Brand Mark Glow --- */
+.brand-mark {
+  animation: brand-glow 3.5s ease-in-out infinite;
+}
+@keyframes brand-glow {
+  0%, 100% { box-shadow: 0 0 6px rgba(125,223,194,0.08); }
+  50% { box-shadow: 0 0 20px rgba(125,223,194,0.3), 0 0 40px rgba(184,169,232,0.1); }
+}
+
+/* --- Nav Item Active Indicator Bar --- */
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 50%;
+  width: 3px; height: 0;
+  transform: translateY(-50%);
+  background: var(--mint);
+  border-radius: 0 4px 4px 0;
+  box-shadow: 0 0 12px rgba(125,223,194,0.5);
+  animation: nav-bar-grow 400ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+@keyframes nav-bar-grow {
+  to { height: 60%; }
+}
+
+/* --- Nav Item Hover Icon Glow --- */
+.nav-item:hover svg {
+  filter: drop-shadow(0 0 6px rgba(125,223,194,0.45));
+  transition: filter 250ms ease;
+}
+.nav-item.active svg {
+  filter: drop-shadow(0 0 4px rgba(125,223,194,0.35));
+}
+
+/* --- Primary Button Gradient Animation --- */
+.primary-button {
+  background-size: 200% 200%;
+  animation: btn-shimmer 3s ease infinite;
+}
+@keyframes btn-shimmer {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* --- Metric Card Shimmer Sweep --- */
+.metric-card {
+  overflow: hidden;
+}
+.metric-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: -70%;
+  width: 50%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
+  transform: skewX(-20deg);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.metric-card:hover::before {
+  opacity: 1;
+  animation: shimmer-sweep 700ms ease-out forwards;
+}
+@keyframes shimmer-sweep {
+  from { left: -70%; }
+  to   { left: 120%; }
+}
+
+/* --- Enhanced Card Hover Shadows --- */
+.metric-card:hover {
+  box-shadow: 0 14px 44px rgba(184,169,232,0.18), 0 0 0 1px rgba(184,169,232,0.2);
+}
+.student-card:hover {
+  box-shadow: 0 14px 40px rgba(184,169,232,0.16);
+}
+.agent-card:hover {
+  box-shadow: 0 16px 48px rgba(184,169,232,0.2), 0 0 0 1px rgba(184,169,232,0.15);
+}
+.school-row:hover {
+  box-shadow: 0 12px 36px rgba(184,169,232,0.14);
+}
+
+/* --- Agent Card Top-Bar Gradient Animation --- */
+.agent-card::before {
+  background-size: 200% 200%;
+  animation: agent-bar-flow 4s ease infinite;
+}
+@keyframes agent-bar-flow {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* --- Mouse-Tracking Glow (driven by animations.ts --glow-x/y) --- */
+.metric-card::after,
+.student-card::after,
+.school-row::after,
+.syllabus-unit-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 300ms ease;
+  background: radial-gradient(
+    320px circle at var(--glow-x, 50%) var(--glow-y, 50%),
+    rgba(184,169,232,0.12), transparent 50%
+  );
+}
+.metric-card:hover::after,
+.student-card:hover::after,
+.school-row:hover::after,
+.syllabus-unit-card:hover::after {
+  opacity: 1;
+}
+/* Ensure position context for glow pseudo-elements */
+.student-card,
+.school-row,
+.syllabus-unit-card {
+  position: relative;
+  overflow: hidden;
+}
+
+/* --- Context Chip Hover Glow --- */
+.context-chip:hover {
+  box-shadow: 0 8px 32px rgba(184,169,232,0.16),
+    inset 0 1px 0 rgba(255,255,255,0.6);
+}
+
+/* --- Pulse Item Hover Lift --- */
+.pulse-item {
+  transition: transform var(--duration-fast) var(--ease), box-shadow var(--duration-fast) var(--ease);
+}
+.pulse-item:hover {
+  box-shadow: 0 8px 28px rgba(45,43,78,0.1);
+}
+
+/* --- Switch Toggle Bounce --- */
+.switch input:checked + span::after {
+  animation: switch-pop 350ms cubic-bezier(0.68, -0.55, 0.265, 1.55) both;
+}
+@keyframes switch-pop {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(20px); }
+}
+
+/* --- Modal Spring-In --- */
+.modal-card {
+  animation: modal-spring 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes modal-spring {
+  0%   { opacity: 0; transform: translateY(28px) scale(0.94); }
+  65%  { transform: translateY(-3px) scale(1.01); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.modal-overlay {
+  animation: overlay-fade 250ms ease both;
+}
+@keyframes overlay-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* --- Toast Slide-In --- */
+#toast-container > * {
+  animation: toast-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes toast-in {
+  from { transform: translateX(110%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* --- Scroll-Reveal Entrance (driven by animations.ts) --- */
+.reveal-ready {
+  opacity: 0;
+  transform: translateY(18px) scale(0.98);
+  transition:
+    opacity 500ms var(--ease),
+    transform 500ms var(--ease);
+  transition-delay: var(--stagger, 0ms);
+}
+.revealed {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+/* --- Attendance Cell Hover Pop --- */
+.attendance-cell {
+  transition: all 140ms var(--ease);
+}
+.attendance-cell:hover {
+  transform: scale(1.12);
+  z-index: 5;
+  box-shadow: 0 4px 14px rgba(45,43,78,0.14);
+}
+
+/* --- Input Focus Glow --- */
+input[type="text"]:focus,
+input[type="date"]:focus,
+input[type="number"]:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--lavender);
+  box-shadow: 0 0 0 3px rgba(184,169,232,0.15),
+    0 2px 8px rgba(184,169,232,0.08);
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+
+/* --- Rich List Hover Bar --- */
+.rich-list li {
+  position: relative;
+  overflow: hidden;
+}
+.rich-list li::after {
+  content: '';
+  position: absolute;
+  left: 0; top: 0;
+  width: 3px; height: 100%;
+  background: linear-gradient(180deg, var(--lavender), var(--mint));
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform 280ms var(--ease);
+}
+.rich-list li:hover::after {
+  transform: scaleY(1);
+}
+
+/* --- Test Row Hover --- */
+.test-row {
+  transition: border-color var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease);
+}
+.test-row:hover {
+  transform: translateX(4px);
+  box-shadow: var(--shadow-sm);
+}
+
+/* --- Lesson Preview Row --- */
+.lesson-preview-row {
+  transition: border-color var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease);
+}
+.lesson-preview-row:hover {
+  transform: translateX(4px);
+  box-shadow: var(--shadow-sm);
+}
+
+/* --- Submission Card Hover --- */
+.submission-card {
+  transition: border-color var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease);
+}
+.submission-card:hover {
+  border-color: var(--lavender);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+}
+
+/* --- Report Card Hover --- */
+.report-student-card {
+  transition: border-color var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease);
+}
+.report-student-card:hover {
+  border-color: var(--lavender);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+}
+
+/* --- Schedule Card Hover --- */
+.schedule-card {
+  transition: border-color var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease);
+}
+.schedule-card:hover {
+  border-color: var(--lavender);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+}
+
+/* --- Calendar Day Hover --- */
+.month-day {
+  transition: background var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease);
+}
+.month-day:hover {
+  transform: scale(1.03);
+  z-index: 3;
+}
+
+/* --- Day Pill Hover --- */
+.day-pill {
+  transition: transform var(--duration-fast) var(--ease);
+}
+.day-pill:hover {
+  transform: scale(1.06);
+}
+
+/* --- Workflow Step Active Ping --- */
+.workflow-steps span.active {
+  position: relative;
+}
+.workflow-steps span.active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 0 0 rgba(107,94,158,0.35);
+  animation: step-ping 2.2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes step-ping {
+  0%        { box-shadow: 0 0 0 0 rgba(107,94,158,0.35); }
+  75%, 100% { box-shadow: 0 0 0 10px rgba(107,94,158,0); }
+}
+
+/* --- Teacher Card Hover --- */
+.teacher-card {
+  transition: background 300ms var(--ease), transform 300ms var(--ease);
+}
+.teacher-card:hover {
+  background: rgba(255,255,255,0.1);
+  transform: translateX(4px);
+}
+
+/* --- Avatar Hover Scale --- */
+.avatar,
+.student-avatar,
+.profile-avatar {
+  transition: transform 300ms var(--ease), box-shadow 300ms var(--ease);
+}
+.teacher-card:hover .avatar,
+.student-card:hover .student-avatar {
+  transform: scale(1.1);
+  box-shadow: 0 4px 16px rgba(45,43,78,0.15);
+}
+
+/* --- Agent Insight Row Hover --- */
+.agent-insight-row {
+  transition: border-color var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease);
+}
+.agent-insight-row:hover {
+  border-color: var(--lavender);
+  transform: translateX(4px);
+}
+
+/* --- Metric Bar Fill Enhancement --- */
+.metric-bar::before {
+  animation: line-fill 1000ms var(--ease) both;
+}
+
+/* --- Startup Tool Progress Pulse --- */
+.startup-tool-progress-fill.installing {
+  animation: progress-pulse 1.5s ease-in-out infinite;
+}
+@keyframes progress-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* --- Segmented Active Transition --- */
+.segmented button {
+  transition: all var(--duration-fast) var(--ease);
+}
+.segmented button.active {
+  animation: seg-pop 250ms var(--ease) both;
+}
+@keyframes seg-pop {
+  0%   { transform: scale(0.92); }
+  60%  { transform: scale(1.03); }
+  100% { transform: scale(1); }
+}
+
+/* --- Sidebar Hover Ambient Glow --- */
+.sidebar::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 120px;
+  background: radial-gradient(ellipse at 50% 100%, rgba(125,223,194,0.08), transparent 70%);
+  pointer-events: none;
+  animation: sidebar-ambience 5s ease-in-out infinite alternate;
+}
+@keyframes sidebar-ambience {
+  0%   { opacity: 0.4; }
+  100% { opacity: 1; }
+}
+
 /* ===== RESPONSIVE ===== */
 
 @media (max-width: 1280px) {
@@ -1793,6 +2454,10 @@ textarea { resize: vertical; font: inherit; }
 }
 
 @media (max-width: 980px) {
+  .startup-gate-layout { grid-template-columns: 1fr; }
+  .startup-gate-brand { min-height: 220px; }
+  .startup-gate-logo { width: min(280px, 72vw); }
+
   #app { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; padding: 16px; }
   .side-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1848,4 +2513,29 @@ textarea { resize: vertical; font: inherit; }
     animation-duration: 1ms !important; animation-iteration-count: 1 !important;
     scroll-behavior: auto !important; transition-duration: 1ms !important;
   }
+}
+
+/* ===== SYLLABUS OPTIONS ===== */
+.schedule-options-row {
+  display: flex;
+  gap: var(--space-4);
+  align-items: center;
+  margin-left: auto;
+}
+.unit-meta-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-strong);
+  font-weight: 600;
+}
+.unit-meta-field input[type="number"], .unit-meta-field select {
+  width: 80px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.unit-meta-field select {
+  width: auto;
+  min-width: 120px;
 }
