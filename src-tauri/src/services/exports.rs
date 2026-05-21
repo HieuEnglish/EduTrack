@@ -1,15 +1,158 @@
 use crate::services::hierarchy::{Database, DbState, YearPlanLesson};
 use crate::services::planning::year_plan_generator::get_year_plan_lessons;
 use crate::services::reports::report_generator::load_report;
+use chrono::{DateTime, Duration, Utc};
 use rusqlite::params;
+use serde::Serialize;
 use serde_json::json;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const WEEKLY_BACKUP_ENABLED_KEY: &str = "backup.weekly.enabled";
+const WEEKLY_BACKUP_LAST_AT_KEY: &str = "backup.weekly.last_export_at";
+const WEEKLY_BACKUP_INTERVAL_DAYS: i64 = 7;
 
 fn export_dir(state: &Database) -> Result<PathBuf, String> {
     let dir = state.data_dir().join("exports");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseBackupExport {
+    pub path: String,
+    pub file_name: String,
+    pub created_at: String,
+    pub file_size_bytes: u64,
+}
+
+fn sqlite_literal_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\'', "''")
+}
+
+fn create_database_backup(state: &Database, file_prefix: &str) -> Result<DatabaseBackupExport, String> {
+    let dir = export_dir(state)?;
+    let created_at = Utc::now().to_rfc3339();
+    let timestamp = Utc::now().format("%Y%m%d-%H%M%S-%3f").to_string();
+    let file_name = format!("{file_prefix}-{timestamp}.sqlite3");
+    let path = dir.join(&file_name);
+
+    state.with_conn(|conn| {
+        // Attempt to checkpoint WAL before snapshot; harmless for non-WAL modes.
+        conn.execute_batch("PRAGMA wal_checkpoint(FULL);").ok();
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+        conn.execute_batch(&format!("VACUUM INTO '{}';", sqlite_literal_path(&path)))
+            .map_err(|e| e.to_string())
+    })?;
+
+    let file_size_bytes = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    Ok(DatabaseBackupExport {
+        path: path.to_string_lossy().to_string(),
+        file_name,
+        created_at,
+        file_size_bytes,
+    })
+}
+
+fn read_setting_value_json(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>, String> {
+    match conn.query_row(
+        "SELECT value_json FROM settings WHERE key = ?1",
+        params![key],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(value) => Ok(Some(value)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn write_setting_value_json(
+    conn: &rusqlite::Connection,
+    key: &str,
+    value_json: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+        params![key, value_json, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn parse_setting_bool(value_json: &str) -> Option<bool> {
+    serde_json::from_str::<bool>(value_json)
+        .ok()
+        .or_else(|| match value_json.trim().to_ascii_lowercase().as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        })
+}
+
+fn parse_setting_string(value_json: &str) -> Option<String> {
+    serde_json::from_str::<String>(value_json)
+        .ok()
+        .or_else(|| {
+            let trimmed = value_json.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+}
+
+#[tauri::command]
+pub async fn export_database_backup(state: DbState<'_>) -> Result<DatabaseBackupExport, String> {
+    create_database_backup(&state, "edutrack-backup")
+}
+
+#[tauri::command]
+pub async fn run_weekly_backup_if_due(
+    state: DbState<'_>,
+) -> Result<Option<DatabaseBackupExport>, String> {
+    let now = Utc::now();
+    let (enabled, last_backup_at) = state.with_conn(|conn| {
+        let enabled = read_setting_value_json(conn, WEEKLY_BACKUP_ENABLED_KEY)?
+            .as_deref()
+            .and_then(parse_setting_bool)
+            .unwrap_or(true);
+        let last_backup_at = read_setting_value_json(conn, WEEKLY_BACKUP_LAST_AT_KEY)?
+            .as_deref()
+            .and_then(parse_setting_string);
+        Ok((enabled, last_backup_at))
+    })?;
+
+    if !enabled {
+        return Ok(None);
+    }
+
+    let due = match last_backup_at
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+    {
+        Some(last) => now.signed_duration_since(last.with_timezone(&Utc))
+            >= Duration::days(WEEKLY_BACKUP_INTERVAL_DAYS),
+        None => true,
+    };
+
+    if !due {
+        return Ok(None);
+    }
+
+    let backup = create_database_backup(&state, "edutrack-backup-weekly")?;
+    let created_at_json = serde_json::to_string(&backup.created_at).map_err(|e| e.to_string())?;
+    state.with_conn(|conn| {
+        write_setting_value_json(conn, WEEKLY_BACKUP_ENABLED_KEY, "true")?;
+        write_setting_value_json(conn, WEEKLY_BACKUP_LAST_AT_KEY, &created_at_json)?;
+        Ok(())
+    })?;
+
+    Ok(Some(backup))
 }
 
 #[tauri::command]

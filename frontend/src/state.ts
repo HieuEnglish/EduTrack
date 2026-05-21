@@ -12,6 +12,9 @@ import {
 export { invoke };
 
 export const holidaySyncAttemptedLevels = new Set<string>();
+const AGENT_REFRESH_TTL_MS = 60_000;
+const agentInsightsCache = new Map<string, { insights: AgentInsight[]; fetchedAt: number }>();
+const agentRefreshInFlight = new Map<string, Promise<void>>();
 
 export const state: AppState = createAppState();
 
@@ -67,6 +70,10 @@ function createAppState(): AppState {
     currentTestId: '',
     testSubmissions: [],
     classroomTestSubmissions: {},
+    classroomMatrixStatus: {},
+    classroomMatrixLastGradedAt: {},
+    classroomMatrixGradeAllBusy: false,
+    classroomMatrixCompactMode: false,
     reportStatuses: [],
     reportInstructions: '',
     reportWordCount: 300,
@@ -193,6 +200,10 @@ export async function loadClassData(state: AppState) {
     state.currentTestId = '';
     state.testSubmissions = [];
     state.classroomTestSubmissions = {};
+    state.classroomMatrixStatus = {};
+    state.classroomMatrixLastGradedAt = {};
+    state.classroomMatrixGradeAllBusy = false;
+    state.classroomMatrixCompactMode = false;
     state.reportStatuses = [];
     return;
   }
@@ -210,7 +221,7 @@ export async function loadClassData(state: AppState) {
   state.tests = (await invoke<TestTemplate[]>('get_class_tests', { classId: state.selectedClassId })) ?? [];
   state.classroomTestSubmissions = await loadClassroomTestSubmissions(state.tests);
   state.reportStatuses = (await invoke<StudentReportStatus[]>('get_class_report_status', { classId: state.selectedClassId })) ?? [];
-  await runAgentsForCurrentClass(state);
+  void runAgentsForCurrentClass(state);
 }
 
 async function loadClassroomTestSubmissions(tests: TestTemplate[]): Promise<Record<string, StudentSubmission[]>> {
@@ -232,10 +243,43 @@ export async function runAgentsForCurrentClass(state: AppState) {
     state.insights = [];
     return;
   }
+  const classId = state.selectedClassId;
+  const cached = agentInsightsCache.get(classId);
+  if (cached) {
+    state.insights = cached.insights;
+  } else {
+    try {
+      const persisted = (await invoke<AgentInsight[]>('get_agent_insights', { classId })) ?? [];
+      state.insights = persisted;
+      agentInsightsCache.set(classId, { insights: persisted, fetchedAt: Date.now() });
+    } catch {
+      state.insights = [];
+    }
+  }
+
+  const isStale = !cached || (Date.now() - cached.fetchedAt) > AGENT_REFRESH_TTL_MS;
+  if (!isStale) return;
+  if (agentRefreshInFlight.has(classId)) return;
+
+  const refreshTask = (async () => {
+    try {
+      const refreshed = (await invoke<AgentInsight[]>('run_class_agents', { classId })) ?? [];
+      agentInsightsCache.set(classId, { insights: refreshed, fetchedAt: Date.now() });
+      if (state.selectedClassId === classId) {
+        state.insights = refreshed;
+      }
+    } catch {
+      // Keep the last cached/persisted insights on refresh failure.
+    } finally {
+      agentRefreshInFlight.delete(classId);
+    }
+  })();
+
+  agentRefreshInFlight.set(classId, refreshTask);
   try {
-    state.insights = (await invoke<AgentInsight[]>('run_class_agents', { classId: state.selectedClassId })) ?? [];
+    await refreshTask;
   } catch {
-    state.insights = [];
+    // Errors are handled inside refreshTask; keep this silent for callers.
   }
 }
 

@@ -68,7 +68,7 @@ export function pageTitle(page: Page) {
     lessonPlans: 'Lesson plans',
     calendar: 'Calendar',
     agents: 'AI agents',
-    tests: 'Tests & Assessments',
+    tests: 'Test Authoring & Assessments',
     reports: 'Student Reports',
     settings: 'Settings',
   };

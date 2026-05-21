@@ -368,8 +368,47 @@ fn build_curriculum_units(
             }
         })
         .collect();
-    let normalized = normalize_extracted_units(provider_units, text, syllabus_id);
+
+    let provider_final = finalize_curriculum_units(provider_units, text, syllabus_id);
+    let heuristic_final = finalize_curriculum_units(extract_units_advanced(text, syllabus_id), text, syllabus_id);
+
+    if should_prefer_heuristic_units(&provider_final, &heuristic_final, text) {
+        heuristic_final
+    } else {
+        provider_final
+    }
+}
+
+fn finalize_curriculum_units(
+    units: Vec<CurriculumUnit>,
+    text: &str,
+    syllabus_id: &str,
+) -> Vec<CurriculumUnit> {
+    let normalized = normalize_extracted_units(units, text, syllabus_id);
     enrich_units_with_source_timeline(normalized, text)
+}
+
+fn should_prefer_heuristic_units(
+    provider_units: &[CurriculumUnit],
+    heuristic_units: &[CurriculumUnit],
+    text: &str,
+) -> bool {
+    let provider_count = provider_units.len();
+    let heuristic_count = heuristic_units.len();
+    if heuristic_count < 2 || heuristic_count <= provider_count {
+        return false;
+    }
+    if provider_count <= 1 {
+        return true;
+    }
+    if heuristic_count >= provider_count.saturating_mul(2) {
+        return true;
+    }
+    let heading_count = Regex::new(r"(?im)^\s*unit\s+\d+")
+        .expect("valid unit heading regex")
+        .find_iter(text)
+        .count();
+    heading_count >= heuristic_count && heuristic_count >= provider_count + 2
 }
 
 fn merge_timeline_labels(base: Option<&str>, extra: Option<&str>) -> Option<String> {
@@ -1813,6 +1852,7 @@ mod tests {
             description: Some("Only one inferred section".to_string()),
             estimated_lessons: Some(4),
             assessment_hint: Some("quiz".to_string()),
+            month_label: None,
         }];
         let units = build_curriculum_units(model_units, text, "syllabus-fallback");
         assert_eq!(units.len(), 9);
@@ -1829,24 +1869,28 @@ mod tests {
                 description: Some("Combined block".to_string()),
                 estimated_lessons: Some(8),
                 assessment_hint: Some("quiz".to_string()),
+                month_label: None,
             },
             ModelUnit {
                 title: "Unit 6 Are You Buying It".to_string(),
                 description: Some("Unit focus".to_string()),
                 estimated_lessons: Some(3),
                 assessment_hint: Some("project".to_string()),
+                month_label: None,
             },
             ModelUnit {
                 title: "Unit 3 The Hero Within".to_string(),
                 description: Some("Combined Feb/Mar".to_string()),
                 estimated_lessons: Some(8),
                 assessment_hint: Some("test".to_string()),
+                month_label: None,
             },
             ModelUnit {
                 title: "Unit 2 The Art of Expression".to_string(),
                 description: Some("Combined Apr/May".to_string()),
                 estimated_lessons: Some(6),
                 assessment_hint: Some("presentation".to_string()),
+                month_label: None,
             },
         ];
         let units = build_curriculum_units(model_units, text, "syllabus-granularity");

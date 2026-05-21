@@ -94,11 +94,12 @@ pub async fn update_student_report(
     teacher_advice_text: Option<String>,
 ) -> Result<(), String> {
     state.with_conn(|conn| {
-        conn.execute(
-            "UPDATE student_reports SET report_text = ?1, teacher_advice_text = ?2, updated_at = ?3 WHERE id = ?4",
-            params![report_text, teacher_advice_text, now(), report_id],
-        ).map_err(|e| e.to_string())?;
-        Ok(())
+        update_student_report_row(
+            conn,
+            &report_id,
+            &report_text,
+            teacher_advice_text.as_deref(),
+        )
     })
 }
 
@@ -211,15 +212,15 @@ Write in paragraphs: academic progress, strengths, areas for growth, and recomme
         ));
 
         let report_id = new_id("report");
-        let timestamp = now();
-
-        conn.execute("DELETE FROM student_reports WHERE student_id = ?1 AND class_id = ?2",
-            params![student_id, class_id]).map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO student_reports (id, student_id, class_id, generated_from_plan_id, word_count_target, report_text, teacher_advice_text, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![report_id, student_id, class_id, None::<String>, target, report_text, advice, timestamp, timestamp],
-        ).map_err(|e| e.to_string())?;
+        replace_student_report_record(
+            conn,
+            &report_id,
+            &student_id,
+            &class_id,
+            target,
+            &report_text,
+            advice.as_deref(),
+        )?;
 
         Ok(report_id)
     })
@@ -276,4 +277,139 @@ fn get_student_data_bundle_internal(conn: &rusqlite::Connection, student_id: &st
     };
 
     Ok(StudentDataBundle { student, attendance_summary, assessment_summary, session_count: total_sessions, attendance_rate, avg_score })
+}
+
+fn update_student_report_row(
+    conn: &rusqlite::Connection,
+    report_id: &str,
+    report_text: &str,
+    teacher_advice_text: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE student_reports SET report_text = ?1, teacher_advice_text = ?2, updated_at = ?3 WHERE id = ?4",
+        params![report_text, teacher_advice_text, now(), report_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn replace_student_report_record(
+    conn: &rusqlite::Connection,
+    report_id: &str,
+    student_id: &str,
+    class_id: &str,
+    word_count_target: i32,
+    report_text: &str,
+    teacher_advice_text: Option<&str>,
+) -> Result<(), String> {
+    let timestamp = now();
+    conn.execute(
+        "DELETE FROM student_reports WHERE student_id = ?1 AND class_id = ?2",
+        params![student_id, class_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO student_reports (id, student_id, class_id, generated_from_plan_id, word_count_target, report_text, teacher_advice_text, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            report_id,
+            student_id,
+            class_id,
+            None::<String>,
+            word_count_target,
+            report_text,
+            teacher_advice_text,
+            timestamp,
+            timestamp
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE student_reports (
+                id TEXT PRIMARY KEY,
+                student_id TEXT NOT NULL,
+                class_id TEXT NOT NULL,
+                generated_from_plan_id TEXT,
+                word_count_target INTEGER NOT NULL,
+                report_text TEXT NOT NULL,
+                teacher_advice_text TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );",
+        )
+        .expect("schema");
+        conn
+    }
+
+    #[test]
+    fn update_student_report_row_updates_text_and_advice() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO student_reports (id, student_id, class_id, generated_from_plan_id, word_count_target, report_text, teacher_advice_text, created_at, updated_at)
+             VALUES ('report-1', 'student-1', 'class-1', NULL, 300, 'old text', 'old advice', 't', 't')",
+            [],
+        )
+        .expect("seed row");
+
+        update_student_report_row(&conn, "report-1", "new text", Some("new advice"))
+            .expect("update report row");
+
+        let (report_text, advice): (String, Option<String>) = conn
+            .query_row(
+                "SELECT report_text, teacher_advice_text FROM student_reports WHERE id = 'report-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("query updated row");
+        assert_eq!(report_text, "new text");
+        assert_eq!(advice.as_deref(), Some("new advice"));
+    }
+
+    #[test]
+    fn replace_student_report_record_keeps_single_row_per_student_class() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO student_reports (id, student_id, class_id, generated_from_plan_id, word_count_target, report_text, teacher_advice_text, created_at, updated_at)
+             VALUES ('report-old', 'student-1', 'class-1', NULL, 300, 'old text', 'old advice', 't', 't')",
+            [],
+        )
+        .expect("seed old row");
+
+        replace_student_report_record(
+            &conn,
+            "report-new",
+            "student-1",
+            "class-1",
+            450,
+            "fresh text",
+            Some("fresh advice"),
+        )
+        .expect("replace row");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM student_reports", [], |row| row.get(0))
+            .expect("count rows");
+        assert_eq!(count, 1);
+
+        let (id, target, text): (String, i32, String) = conn
+            .query_row(
+                "SELECT id, word_count_target, report_text FROM student_reports WHERE student_id = 'student-1' AND class_id = 'class-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("query replacement row");
+        assert_eq!(id, "report-new");
+        assert_eq!(target, 450);
+        assert_eq!(text, "fresh text");
+    }
 }

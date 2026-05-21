@@ -94,18 +94,6 @@ function Get-FreePort($StartPort) {
   throw "No free local UI port found between $StartPort and 5299."
 }
 
-function Show-AvgChecklist() {
-  Write-Host ""
-  Write-Host "AVG Exception Checklist (copy these into AVG > Menu > Settings > Exceptions):"
-  Write-Host "  $Root"
-  Write-Host "  $DevCache"
-  Write-Host "  $CargoTargetDir"
-  Write-Host "  $Tauri"
-  Write-Host "  $(Join-Path $Frontend 'node_modules')"
-  Write-Host "  $ExpectedAppExe"
-  Write-Host ""
-}
-
 if (-not (Test-Path $Frontend)) {
   throw "Frontend folder not found: $Frontend"
 }
@@ -114,13 +102,12 @@ New-Item -ItemType Directory -Path $DevCache -Force | Out-Null
 New-Item -ItemType Directory -Path $CargoTargetDir -Force | Out-Null
 
 if ($Doctor) {
-  Write-Step "Doctor mode: printing AVG-safe exclusions and local lock status."
-  Show-AvgChecklist
+  Write-Step "Doctor mode: checking local lock status."
   if (Test-FileLocked $ExpectedAppExe) {
-    Write-Step "Detected lock on $ExpectedAppExe. This is usually antivirus real-time scanning."
+    Write-Step "Detected lock on $ExpectedAppExe."
     Write-Host "Quick recovery:"
     Write-Host "  1. End task: tauri-app.exe and cargo-tauri.exe"
-    Write-Host "  2. In AVG, add the exceptions listed above"
+    Write-Host "  2. Restart your machine if the lock persists"
     Write-Host "  3. Re-run: .\\run.bat"
     exit 1
   }
@@ -172,9 +159,8 @@ if (-not $Browser) {
   }
 
   if (Test-FileLocked $ExpectedAppExe) {
-    Write-Step "Detected antivirus lock on $ExpectedAppExe."
-    Show-AvgChecklist
-    throw "App binary is locked before startup. Configure AVG exceptions, then rerun .\\run.bat."
+    Write-Step "Detected file lock on $ExpectedAppExe."
+    throw "App binary is locked before startup. Close stale processes and rerun .\\run.bat."
   }
 
   Clear-StaleCargoIncremental

@@ -307,6 +307,10 @@ export type AppState = {
   currentTestId: string;
   testSubmissions: StudentSubmission[];
   classroomTestSubmissions: Record<string, StudentSubmission[]>;
+  classroomMatrixStatus: Record<string, 'idle' | 'uploaded' | 'grading' | 'graded' | 'failed'>;
+  classroomMatrixLastGradedAt: Record<string, string>;
+  classroomMatrixGradeAllBusy: boolean;
+  classroomMatrixCompactMode: boolean;
   reportStatuses: StudentReportStatus[];
   reportInstructions: string;
   reportWordCount: number;

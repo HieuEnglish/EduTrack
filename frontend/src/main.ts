@@ -2,7 +2,7 @@ import './style.css';
 import './animations';
 import 'flag-icons/css/flag-icons.min.css';
 import type {
-  Page, ClassTab, CalendarMode, ClassCalendarMode, LessonExportScope, LessonExportFormat,
+  Page, ClassTab, CalendarMode, LessonExportScope, LessonExportFormat,
   School, ClassView, Student, AgentInsight, ScheduleRule, CurriculumUnit,
   LlmConfig, GradingDiagnostics, GradingToolInstallResult, TestTemplate, TestDraft, TestSyllabusSection, StudentSubmission, StudentReportStatus, SyllabusExtractionDiagnostics,
   StudentReportView, YearPlanBundle, YearPlanLesson, CalendarClassSessionView,
@@ -18,11 +18,62 @@ import {
 } from './state';
 import {
   icon, escapeHtml, emptyState, capitalize, getGreeting, pageTitle,
-  parseYmdUtc, formatYmdUtc, shortDate, formatDisplayDate, isTodayIso, currentMonthKey,
+  parseYmdUtc, formatYmdUtc, shortDate, formatDisplayDate, currentMonthKey,
   countryName, countryCodes, academicYearWindow, browserTimezone, academicYearOptions,
   weekdays, weekLabels, downloadTextFile, readImageAsDataUrl, showToast,
-  classDateRange, monthGridDates, weekKey, parseLessonPlan, downloadExport,
+  classDateRange, monthGridDates, parseLessonPlan, downloadExport,
 } from './utils';
+import {
+  summarizeAttendance,
+  filterActiveClassSessions,
+  sortSessionsForDisplay,
+  attendanceTone as attendanceToneClass,
+  attendanceMark as attendanceMarkLabel,
+  isAttendedStatus as isAttendedStatusValue,
+  nextAttendanceStatus as nextAttendanceState,
+} from './features/attendance';
+import {
+  AGENT_CARDS,
+  buildAgentSignalSummary,
+  groupInsightsByAgentType,
+} from './features/agents';
+import {
+  buildUnitAssignedRangeLabel,
+  buildDetailedPlanningContext as buildDetailedPlanningContextValue,
+  exportScopeTitle as exportScopeTitleValue,
+  groupLessonsForExport as groupLessonsForExportValue,
+  splitUnitAndTopic as splitUnitAndTopicValue,
+  previewUnitTags as previewUnitTagsValue,
+  scopedPeriodLabel as scopedPeriodLabelValue,
+  lessonPreviewSummary as lessonPreviewSummaryValue,
+} from './features/lessonPlanning';
+import { renderAgentsPage } from './pages/agentsPage';
+import { renderLessonPlansPage } from './pages/lessonPlansPage';
+import {
+  bindReportsPageEvents,
+  renderReportsPage,
+} from './pages/reportsPage';
+import {
+  bindTestsPageEvents,
+  renderTestsPage,
+} from './pages/testsPage';
+import {
+  bindClassroomAttendanceEvents,
+  renderClassroomAttendanceTab,
+} from './pages/classrooms/attendanceTab';
+import {
+  bindClassroomMatrixUploadEvents,
+  renderClassroomTestsTab as renderClassroomTestsTabView,
+} from './pages/classrooms/testsTab';
+import {
+  bindClassCalendarTabEvents,
+  classCalendarLessonsForSelectedClass,
+  renderClassCalendarTab,
+  renderDayClassScheduleModal as renderDayClassScheduleModalValue,
+  renderDayLessonsListModal as renderDayLessonsListModalValue,
+  renderLessonDetailModal as renderLessonDetailModalValue,
+  shiftClassCalendarMonth,
+} from './pages/classrooms/calendarTab';
 
 const app = document.querySelector<HTMLDivElement>('#app');
 
@@ -31,6 +82,23 @@ if (!app) {
 }
 
 const root = app;
+const DISPLAY_DENSITY_STORAGE_KEY = 'edutrack.displayDensity.v1';
+
+function currentDisplayDensity(): 'compact' | 'comfortable' {
+  try {
+    return localStorage.getItem(DISPLAY_DENSITY_STORAGE_KEY) === 'comfortable' ? 'comfortable' : 'compact';
+  } catch {
+    return 'compact';
+  }
+}
+
+function setDisplayDensity(value: 'compact' | 'comfortable') {
+  try { localStorage.setItem(DISPLAY_DENSITY_STORAGE_KEY, value); } catch { /* ignore */ }
+}
+
+function applyDisplayDensityClass() {
+  document.body.classList.toggle('density-comfortable', currentDisplayDensity() === 'comfortable');
+}
 
 const pages: Array<{ id: Page; label: string; icon: string }> = [
   { id: 'overview', label: 'Overview', icon: 'layout' },
@@ -39,19 +107,9 @@ const pages: Array<{ id: Page; label: string; icon: string }> = [
   { id: 'classrooms', label: 'Classrooms', icon: 'users' },
   { id: 'calendar', label: 'Calendar', icon: 'calendar' },
   { id: 'agents', label: 'Agents', icon: 'cpu' },
-  { id: 'tests', label: 'Tests', icon: 'check-circle' },
+  { id: 'tests', label: 'Test Authoring', icon: 'check-circle' },
   { id: 'reports', label: 'Reports', icon: 'book' },
   { id: 'settings', label: 'Settings', icon: 'settings' },
-];
-
-const agentCards = [
-  { type: 'attendance', title: 'Attendance Risk', body: 'Identifies students whose attendance patterns need review.', color: 'peach', icon: 'users' },
-  { type: 'planning', title: 'Lesson Pacing', body: 'Detects when planned lessons are falling behind the calendar.', color: 'violet', icon: 'calendar' },
-  { type: 'performance', title: 'Academic Performance', body: 'Monitors assessment score trends and flags declining performance.', color: 'rose', icon: 'cpu' },
-  { type: 'assignments', title: 'Assignment Completion', body: 'Flags completed sessions with missing attendance or assessment records.', color: 'mint', icon: 'check-circle' },
-  { type: 'engagement', title: 'Engagement Pulse', body: 'Looks for changes in session completion and late arrival patterns.', color: 'sky', icon: 'layout' },
-  { type: 'reports', title: 'Report Writer', body: 'Drafts student report language and tracks which reports need updating.', color: 'lavender', icon: 'book' },
-  { type: 'syllabus', title: 'Syllabus Extraction', body: 'Verifies extracted units match the syllabus text and flags issues.', color: 'amber', icon: 'upload' },
 ];
 
 type PersistedSyllabusDraft = {
@@ -110,24 +168,15 @@ const lessonExportSelection = new Set<string>();
 const sortedCountryChoices = countryCodes
   .map((code) => ({ code, name: countryName(code) ?? code }))
   .sort((a, b) => a.name.localeCompare(b.name));
-const monthAliasToFull: Record<string, string> = {
-  january: 'january', jan: 'january',
-  february: 'february', feb: 'february',
-  march: 'march', mar: 'march',
-  april: 'april', apr: 'april',
-  may: 'may',
-  june: 'june', jun: 'june',
-  july: 'july', jul: 'july',
-  august: 'august', aug: 'august',
-  september: 'september', sep: 'september', sept: 'september',
-  october: 'october', oct: 'october',
-  november: 'november', nov: 'november',
-  december: 'december', dec: 'december',
-};
-const monthAliasRegex = /\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec)\b/g;
 let activeCountryPickerClose: (() => void) | null = null;
 let countryPickerOutsideBound = false;
 let detailedPlanCancelRequested = false;
+let lastDatabaseBackupPath = '';
+let llmSetupWizardOpen = false;
+let llmSetupBusy = false;
+let llmSetupProvider: 'ollama' | 'opencode' = 'opencode';
+let llmSetupModel = '';
+let llmSetupMessage = '';
 
 type AttachDetailedPlansResult = {
   attachedCount: number;
@@ -143,6 +192,13 @@ type DeleteSchoolDataResult = {
   studentsDeleted: number;
   yearPlansDeleted: number;
   yearPlanLessonsDeleted: number;
+};
+
+type DatabaseBackupResult = {
+  path: string;
+  fileName: string;
+  createdAt: string;
+  fileSizeBytes: number;
 };
 
 function ensureCountryPickerOutsideBinding() {
@@ -257,46 +313,12 @@ function startDetailedPlanHeartbeat(labelFactory: () => string) {
   return () => window.clearInterval(timer);
 }
 
-function unitTimelineFromText(unit: CurriculumUnit) {
-  const explicitMonthLabel = (unit.monthLabel ?? '').trim();
-  if (explicitMonthLabel) return explicitMonthLabel;
-
-  const source = `${unit.title} ${unit.description ?? ''}`.toLowerCase();
-  const assignedTimelineMatch = source.match(/assigned\s+timeline\s*:\s*([^\n.]+)/i);
-  if (assignedTimelineMatch?.[1]?.trim()) {
-    return assignedTimelineMatch[1].trim();
-  }
-
-  const foundMonths: string[] = [];
-  for (const match of source.matchAll(monthAliasRegex)) {
-    const token = match[1]?.toLowerCase();
-    if (!token) continue;
-    const full = monthAliasToFull[token];
-    if (full) foundMonths.push(full);
-  }
-
-  const compactDateRange = source.match(/\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\s*(?:to|-)\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/);
-  if (compactDateRange) return compactDateRange[0];
-  const isoDateRange = source.match(/\b\d{4}-\d{2}-\d{2}\s*(?:to|-)\s*\d{4}-\d{2}-\d{2}\b/);
-  if (isoDateRange) return isoDateRange[0];
-  if (foundMonths.length >= 2) {
-    const unique = Array.from(new Set(foundMonths));
-    return `${capitalize(unique[0])} to ${capitalize(unique[unique.length - 1])}`;
-  }
-  if (foundMonths.length === 1) return capitalize(foundMonths[0]);
-  return null;
-}
-
 function unitAssignedRangeLabel(unit: CurriculumUnit) {
-  const scheduled = nonBufferLessons().filter((lesson) => lesson.curriculumUnitId === unit.id);
-  if (scheduled.length > 0) {
-    const sorted = [...scheduled].sort((a, b) => a.teachingDate.localeCompare(b.teachingDate));
-    const first = sorted[0];
-    const last = sorted[sorted.length - 1];
-    if (first.teachingDate === last.teachingDate) return formatDisplayDate(first.teachingDate);
-    return `${formatDisplayDate(first.teachingDate)} to ${formatDisplayDate(last.teachingDate)}`;
-  }
-  return unitTimelineFromText(unit) ?? 'Timeline not detected in source';
+  return buildUnitAssignedRangeLabel({
+    unit,
+    nonBufferLessons: nonBufferLessons(),
+    formatDisplayDate,
+  });
 }
 
 function syllabusContextKey(
@@ -689,6 +711,14 @@ async function loadInitialData() {
     await loadSchoolDirectory(state);
     await loadSchoolImages(state);
     await loadSettings(state);
+    try {
+      const weeklyBackup = await invoke<DatabaseBackupResult | null>('run_weekly_backup_if_due');
+      if (weeklyBackup?.path) {
+        lastDatabaseBackupPath = weeklyBackup.path;
+        const mb = (weeklyBackup.fileSizeBytes / (1024 * 1024)).toFixed(2);
+        showToast(`Weekly backup saved automatically (${mb} MB)`);
+      }
+    } catch { /* backup failures should not block app startup */ }
     const profileJson = await invoke<string | null>('get_teacher_profile');
     if (profileJson) {
       try {
@@ -773,8 +803,10 @@ function shell(content: string) {
           <p class="eyebrow">${getGreeting()}</p>
           <h1>${pageTitle(state.page)}</h1>
         </div>
-        <div class="top-actions">
-          <button type="button" class="ghost-button">${icon('check-circle')} Review day</button>
+        <div class="topbar-actions">
+          <button id="display-density-toggle" class="ghost-button compact-button" type="button" title="Switch between compact and comfortable spacing" aria-label="Switch display density">
+            Density: ${currentDisplayDensity() === 'comfortable' ? 'Comfort' : 'Compact'}
+          </button>
         </div>
       </header>
       ${state.page === 'overview' ? renderSetupWorkflow() : ''}
@@ -798,6 +830,7 @@ function shell(content: string) {
   `;
 
   bindShellEvents();
+  applyDisplayDensityClass();
 }
 
 function pulseRail() {
@@ -820,11 +853,8 @@ function pulseItem(label: string, value: string, tone: 'ok' | 'warn' | 'idle') {
 }
 
 function agentSignalBar() {
-  const severityOrder = ['high', 'warning', 'neutral'];
-  const sorted = [...state.insights].sort((a, b) => severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity));
-  const top = sorted.slice(0, 3);
-  const highCount = state.insights.filter((i) => i.severity === 'high').length;
-  const warnCount = state.insights.filter((i) => i.severity === 'warning').length;
+  const summary = buildAgentSignalSummary(state.insights);
+  const { sorted, top, highCount, warnCount } = summary;
   return `
     <section class="agent-signal-bar animate-fade-in-up" aria-label="Agent signals">
       <span class="agent-signal-icon">${icon(highCount > 0 ? 'alert-circle' : 'check-circle')}</span>
@@ -949,7 +979,15 @@ function renderOverview() {
 }
 
 function renderSetupWorkflow() {
-  const canAddClass = state.schools.length > 0;
+  const hasSchool = state.schools.length > 0;
+  const hasClass = state.classes.length > 0;
+  const hasSyllabus = Boolean(state.currentSyllabusId) || state.extractedUnits.length > 0;
+  const hasSchedule = state.generatedLessons.length > 0 || Boolean(selectedClass(state)?.yearPlanId);
+  const nonBuffer = state.generatedLessons.filter((lesson) => !lesson.isBuffer);
+  const hasDetailedPlans = nonBuffer.some((lesson) => lesson.detailedPlanAttached);
+  const allDetailedAttached = nonBuffer.length > 0 && nonBuffer.every((lesson) => lesson.detailedPlanAttached);
+  const hasStudents = state.students.length > 0;
+  const canAddClass = hasSchool;
   const defaultClassDates = selectedLevel(state)
     ? { start: selectedLevel(state)?.academicYearStart ?? academicYearWindow().start, end: selectedLevel(state)?.academicYearEnd ?? academicYearWindow().end }
     : academicYearWindow();
@@ -958,12 +996,17 @@ function renderSetupWorkflow() {
       <div class="workflow-header">
         <div>
           <p class="eyebrow">Start here</p>
-          <h2>Add School, then Add Class</h2>
-          <p>Create the school first. Once it exists, add classes under that school.</p>
+          <h2>Setup Workflow</h2>
+          <p>Follow the full teacher workflow from school setup to detailed lesson planning.</p>
         </div>
         <div class="workflow-steps" aria-label="School setup workflow">
-          <span class="active">1 Add school</span>
-          <span class="${canAddClass ? 'active' : ''}">2 Add class</span>
+          <button type="button" class="workflow-step ${hasSchool ? 'done' : 'todo'}" data-workflow-step="1">1 Add school</button>
+          <button type="button" class="workflow-step ${hasClass ? 'done' : 'todo'}" data-workflow-step="2">2 Add class</button>
+          <button type="button" class="workflow-step ${hasSyllabus ? 'done' : 'todo'}" data-workflow-step="3">3 Upload syllabus</button>
+          <button type="button" class="workflow-step ${hasSchedule ? 'done' : 'todo'}" data-workflow-step="4">4 Generate lesson schedule</button>
+          <button type="button" class="workflow-step ${hasDetailedPlans ? 'done' : 'todo'}" data-workflow-step="5">5 Generate detailed lesson plans</button>
+          <button type="button" class="workflow-step ${allDetailedAttached ? 'done' : 'todo'}" data-workflow-step="6">6 Attach detailed plans to calendar</button>
+          <button type="button" class="workflow-step ${hasStudents ? 'done' : 'todo'}" data-workflow-step="7">7 Add students to classroom</button>
         </div>
       </div>
       ${state.setupNotice ? `<div class="notice ${state.setupBusy ? 'notice-info' : 'notice-ok'} setup-notice">${icon(state.setupBusy ? 'alert-circle' : 'check-circle')}<span>${escapeHtml(state.setupNotice)}</span></div>` : ''}
@@ -1014,10 +1057,7 @@ function renderSchoolDirectory() {
 }
 
 function attendanceSummary() {
-  const sessions = activeClassSessions();
-  if (sessions.length === 0) return 'No data';
-  const completed = sessions.filter((s) => s.completed).length;
-  return `${completed}/${sessions.length}`;
+  return summarizeAttendance(activeClassSessions());
 }
 
 function coverageSummary() {
@@ -1029,47 +1069,20 @@ function activeClassSessions() {
   const level = selectedLevel(state);
   const range = klass && level ? classDateRange(klass, level) : null;
   const closureDates = new Set(state.calendarClosures.map((c) => c.closureDate));
-  return state.sessions.filter((s) => !closureDates.has(s.sessionDate) && (!range || (s.sessionDate >= range.start && s.sessionDate <= range.end)));
+  return filterActiveClassSessions({
+    sessions: state.sessions,
+    closureDates,
+    dateRange: range,
+  });
 }
 
 function sortedSessions() {
   const today = formatYmdUtc(new Date());
-  return activeClassSessions().filter((s) => state.showAttendanceHistory || s.sessionDate >= today).sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));
-}
-
-function attendanceFor(studentId: string, sessionId: string) {
-  return state.attendanceRecords.find((r) => r.studentId === studentId && r.sessionId === sessionId) ?? null;
-}
-
-function isAttendedStatus(status?: string | null) {
-  return status === 'present' || status === 'late';
-}
-
-function attendanceTone(status: string) {
-  if (status === 'present') return 'is-present';
-  if (status === 'late') return 'is-late';
-  if (status === 'absent') return 'is-absent';
-  if (status === 'excused') return 'is-excused';
-  if (status === 'ignore') return 'is-ignore';
-  return 'is-blank';
-}
-
-function attendanceMark(status: string) {
-  if (status === 'present') return 'P';
-  if (status === 'late') return 'L';
-  if (status === 'absent') return 'A';
-  if (status === 'excused') return 'E';
-  if (status === 'ignore') return 'I';
-  return '-';
-}
-
-function nextAttendanceStatus(status: string) {
-  if (!status) return 'present';
-  if (status === 'present') return 'late';
-  if (status === 'late') return 'absent';
-  if (status === 'absent') return 'excused';
-  if (status === 'excused') return 'ignore';
-  return 'present';
+  return sortSessionsForDisplay({
+    sessions: activeClassSessions(),
+    showHistory: state.showAttendanceHistory,
+    todayIso: today,
+  });
 }
 
 function findSchoolRegion(schoolId: string) {
@@ -1094,10 +1107,10 @@ function renderClassrooms() {
       <div>
         <p class="eyebrow">Classroom</p>
         <h2 class="text-balance">${selectedClass(state)?.name ?? 'No class selected'}</h2>
-        <p>Switch between roster, schedule, attendance, and tests.</p>
+        <p>Switch between roster, schedule, attendance, and marking.</p>
       </div>
       <div class="segmented">
-        ${(['students', 'calendar', 'attendance', 'tests'] as ClassTab[]).map((tab) => `<button type="button" class="${state.classTab === tab ? 'active' : ''}" data-class-tab="${tab}">${capitalize(tab)}</button>`).join('')}
+        ${(['students', 'calendar', 'attendance', 'tests'] as ClassTab[]).map((tab) => `<button type="button" class="${state.classTab === tab ? 'active' : ''}" data-class-tab="${tab}">${tab === 'tests' ? 'Marking' : capitalize(tab)}</button>`).join('')}
       </div>
     </section>
     <div class="animate-fade-in-up delay-200">${renderClassroomTab()}</div>
@@ -1112,7 +1125,19 @@ function renderClassroomTab() {
     return `<section class="panel class-calendar-panel">${html}</section>`;
   }
   if (state.classTab === 'tests') return renderClassroomTestsTab();
-  return `<section class="panel"><div class="panel-head"><div><p class="eyebrow">Attendance register</p><h2>Class attendance</h2></div><button id="toggle-attendance-history" class="ghost-button" type="button">${state.showAttendanceHistory ? 'Hide history' : 'Show history'}</button></div>${attendanceSpreadsheet()}</section>`;
+  return renderClassroomAttendanceTab({
+    showAttendanceHistory: state.showAttendanceHistory,
+    students: state.students,
+    totalSessions: activeClassSessions(),
+    visibleSessions: sortedSessions(),
+    attendanceRecords: state.attendanceRecords,
+    emptyState,
+    escapeHtml,
+    shortDate,
+    isAttendedStatus: isAttendedStatusValue,
+    attendanceTone: attendanceToneClass,
+    attendanceMark: attendanceMarkLabel,
+  });
 }
 
 function renderStudentsTab() {
@@ -1166,257 +1191,60 @@ function studentCardHtml(s: Student, i: number, avatarColors: string[], emojis: 
   '</article>';
 }
 
-function attendanceSpreadsheet() {
-  if (state.students.length === 0) return emptyState('No students', 'Add students before taking attendance.');
-  const totalSessions = activeClassSessions();
-  if (totalSessions.length === 0) return emptyState('No attendance dates', 'Choose class meeting days and EduTrack will create the date columns.');
-  const visibleSessions = sortedSessions();
-  if (visibleSessions.length === 0) return emptyState('No upcoming attendance', 'There are no class dates from today onward. Use Show history to view past attendance.');
-  return `
-    <div class="attendance-sheet-wrap">
-      <table class="attendance-sheet">
-        <thead><tr><th class="sticky-col student-col">Student</th>${visibleSessions.map((s) => `<th class="date-col"><span>${escapeHtml(shortDate(s.sessionDate))}</span><small>${escapeHtml(s.title)}</small></th>`).join('')}<th class="sticky-total total-col">Attended total</th></tr></thead>
-        <tbody>${state.students.map((student, index) => {
-          const studentTotal = totalSessions.filter((s) => attendanceFor(student.id, s.id)?.status !== 'ignore').length;
-          const attendedTotal = totalSessions.filter((s) => isAttendedStatus(attendanceFor(student.id, s.id)?.status)).length;
-          const percent = studentTotal > 0 ? Math.round((attendedTotal / studentTotal) * 100) : 0;
-          return `<tr class="${index % 2 === 0 ? 'row-even' : 'row-odd'}">
-            <th class="sticky-col student-col" scope="row"><strong>${escapeHtml(student.fullName)}</strong><span>${escapeHtml(student.studentCode ?? student.preferredName ?? 'No code')}</span></th>
-            ${visibleSessions.map((session) => {
-              const status = attendanceFor(student.id, session.id)?.status ?? '';
-              return `<td><button type="button" class="attendance-cell ${attendanceTone(status)}" data-attendance-cell="true" data-session-id="${escapeHtml(session.id)}" data-student-id="${escapeHtml(student.id)}" aria-label="${escapeHtml(`${student.fullName} ${session.sessionDate} ${status || 'not marked'}`)}">${escapeHtml(attendanceMark(status))}</button></td>`;
-            }).join('')}
-            <td class="sticky-total total-col"><strong>${percent}%</strong><span>${attendedTotal}/${studentTotal}</span></td>
-          </tr>`;
-        }).join('')}</tbody>
-      </table>
-    </div>
-    <div class="attendance-legend">
-      <span><i class="present"></i>Present</span><span><i class="late"></i>Late</span><span><i class="absent"></i>Absent</span>
-      <span><i class="excused"></i>Excused</span><span><i class="ignore"></i>Ignore</span><span><i class="blank"></i>Unmarked</span>
-    </div>`;
-}
-
 function classCalendar() {
   const klass = selectedClass(state);
   const level = selectedLevel(state);
-  const cursor = classCalendarCursor();
-  const year = cursor.getUTCFullYear();
-  const month = cursor.getUTCMonth();
-  const monthTitle = cursor.toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
   const range = klass && level ? classDateRange(klass, level) : null;
   const academicLabel = range ? `${formatDisplayDate(range.start)} - ${formatDisplayDate(range.end)}` : 'No class dates';
-  const scheduledClassDays = activeClassSessions().length;
-  return `
-    <div class="class-calendar-hero">
-      <div>
-        <p class="eyebrow">Class calendar</p>
-        <h2>${escapeHtml(klass?.name ?? 'No class selected')}</h2>
-        <p>${escapeHtml(academicLabel)} - ${scheduledClassDays} scheduled class days, holidays excluded</p>
-      </div>
-      <div class="class-calendar-controls">
-        <div class="segmented">${(['month', 'year'] as ClassCalendarMode[]).map((mode) => `<button type="button" class="${state.classCalendarMode === mode ? 'active' : ''}" data-class-calendar-mode="${mode}">${capitalize(mode)}</button>`).join('')}</div>
-        <div class="calendar-nav">
-          <button class="ghost-button compact-button" type="button" data-class-calendar-shift="-1">Prev</button>
-          <button class="ghost-button compact-button" type="button" data-class-calendar-today="true">Today</button>
-          <button class="ghost-button compact-button" type="button" data-class-calendar-shift="1">Next</button>
-        </div>
-      </div>
-    </div>
-    <div class="class-calendar-summary">
-      <div><span>Weekly rhythm</span><strong>${escapeHtml(classScheduleSummary())}</strong></div>
-      <div><span>Lesson plan</span><strong>${state.generatedLessons.length > 0 ? `${state.generatedLessons.length} lessons` : 'No plan linked'}</strong></div>
-      <div><span>Flex days</span><strong>${state.generatedLessons.filter((l) => l.isBuffer).length}</strong></div>
-      <div><span>Closures</span><strong>${state.calendarClosures.length}</strong></div>
-    </div>
-    ${state.generatedLessons.some((l) => l.isBuffer) ? '<p class="calendar-footnote">Flex days are review, reteaching, or catch-up time built into the plan automatically.</p>' : ''}
-    ${state.classCalendarMode === 'year' ? yearCalendar(year) : `<div class="class-calendar-month-head"><h3>${escapeHtml(monthTitle)}</h3><span>${escapeHtml(selectedSchool(state)?.name ?? 'School calendar')}</span></div>${monthCalendar(year, month)}`}
-    ${state.generatedLessons.some((l) => l.teachingDate < formatYmdUtc(new Date()) && l.status !== 'completed') ? `<button id="reschedule-missed" class="primary-button compact-button" type="button">${icon('calendar')} Reschedule missed lessons</button>` : ''}
-  `;
-}
-
-function classCalendarCursor() {
-  return parseYmdUtc(`${state.classCalendarMonth}-01`) ?? new Date(Date.UTC(new Date().getFullYear(), new Date().getMonth(), 1));
+  return renderClassCalendarTab({
+    className: klass?.name ?? 'No class selected',
+    schoolName: selectedSchool(state)?.name ?? 'School calendar',
+    classCalendarMode: state.classCalendarMode,
+    classCalendarMonth: state.classCalendarMonth,
+    scheduleRules: state.scheduleRules,
+    generatedLessons: state.generatedLessons,
+    calendarClosures: state.calendarClosures,
+    classSessions: activeClassSessions(),
+    classLessons: classCalendarLessons(),
+    academicLabel,
+    weekLabels,
+    escapeHtml,
+    capitalize,
+    icon,
+  });
 }
 
 function shiftClassCalendar(value: number) {
-  const cursor = classCalendarCursor();
-  cursor.setUTCMonth(cursor.getUTCMonth() + (state.classCalendarMode === 'year' ? value * 12 : value));
-  state.classCalendarMonth = `${cursor.getUTCFullYear()}-${`${cursor.getUTCMonth() + 1}`.padStart(2, '0')}`;
-}
-
-function classScheduleSummary() {
-  if (state.scheduleRules.length === 0) return 'No meeting days set';
-  return state.scheduleRules.map((r) => [capitalize(r.weekday), r.periodLabel, r.startTime].filter(Boolean).join(' ')).join(', ');
+  state.classCalendarMonth = shiftClassCalendarMonth(state.classCalendarMonth, state.classCalendarMode, value);
 }
 
 function classCalendarLessons() {
-  const classId = state.selectedClassId;
-  if (!classId) return state.generatedLessons;
-  const lessons = state.allCalendarLessons
-    .filter((entry) => entry.classId === classId)
-    .map((entry) => entry.lesson);
-  return lessons.length > 0 ? lessons : state.generatedLessons;
-}
-
-function monthCalendar(year: number, month: number, compact = false) {
-  const dates = monthGridDates(year, month);
-  return `<div class="month-grid ${compact ? 'mini-month-grid' : ''}">
-    ${weekLabels.map((l) => `<div class="weekday-head">${l}</div>`).join('')}
-    ${dates.map((date) => {
-      const iso = formatYmdUtc(date);
-      const inMonth = date.getUTCMonth() === month;
-      const events = classCalendarEvents(iso);
-      const lessonPill = events.lesson
-        ? events.lesson.isBuffer
-          ? '<span class="day-pill buffer-pill">Flex</span>'
-          : `<span class="day-pill lesson-pill status-${escapeHtml(events.lesson.status)}">${escapeHtml(events.lesson.lessonTitle)}</span>`
-        : '';
-      const lessonStateBadge = events.lesson && !events.lesson.isBuffer
-        ? events.lesson.status === 'completed'
-          ? '<span class="lesson-state-badge is-complete">Complete</span>'
-          : events.lesson.status === 'missed'
-            ? '<span class="lesson-state-badge is-incomplete">Not completed</span>'
-            : '<span class="lesson-state-badge is-pending">Pending</span>'
-        : '';
-      const lessonActions = events.lesson && !events.lesson.isBuffer && !compact
-        ? `<div class="lesson-actions">
-            <button class="lesson-status-chip complete ${events.lesson.status === 'completed' ? 'active' : ''}" data-mark-lesson="${escapeHtml(events.lesson.id)}" data-status="completed" title="Mark complete">Complete</button>
-            <button class="lesson-status-chip incomplete ${events.lesson.status === 'missed' ? 'active' : ''}" data-mark-lesson="${escapeHtml(events.lesson.id)}" data-status="missed" title="Mark not completed">Not completed</button>
-          </div>`
-        : '';
-      const viewPlanButton = events.lesson && events.lesson.detailedPlanAttached && !events.lesson.isBuffer && !compact
-        ? `<button class="ghost-button compact-button" type="button" data-open-lesson-plan="${escapeHtml(events.lesson.id)}">View Lesson Plan</button>`
-        : '';
-      return `<div class="month-day ${inMonth ? '' : 'muted-day'} ${isTodayIso(iso) ? 'today' : ''} ${events.hasClass ? 'has-class' : ''} ${events.closure ? 'has-closure' : ''} ${events.lesson ? 'has-lesson' : ''}" data-date="${escapeHtml(iso)}">
-        <div class="day-number">${date.getUTCDate()}</div>
-        ${events.hasClass ? '<span class="day-pill class-pill-dot">Class</span>' : ''}
-        ${lessonPill}
-        ${lessonStateBadge}
-        ${lessonActions}
-        ${viewPlanButton}
-        ${events.closure ? `<span class="day-pill closure-pill">${escapeHtml(events.closure.title ?? 'Closure')}</span>` : ''}
-      </div>`;
-    }).join('')}
-  </div>`;
-}
-
-function yearCalendar(year: number) {
-  return `<div class="year-calendar-head"><h3>${year}</h3><span>${activeClassSessions().length} scheduled class days in this class, holidays excluded</span></div>
-    <div class="year-calendar-grid">${Array.from({ length: 12 }, (_, month) => {
-      const date = new Date(Date.UTC(year, month, 1));
-      return `<section class="year-month"><h4>${escapeHtml(date.toLocaleDateString(undefined, { month: 'long', timeZone: 'UTC' }))}</h4>${monthCalendar(year, month, true)}</section>`;
-    }).join('')}</div>`;
-}
-
-function classCalendarEvents(isoDate: string) {
-  const closure = state.calendarClosures.find((item) => item.closureDate === isoDate) ?? null;
-  const session = closure ? null : activeClassSessions().find((item) => item.sessionDate === isoDate) ?? null;
-  const lessons = classCalendarLessons();
-  const lesson = closure ? null : lessons.find((item) => item.teachingDate === isoDate) ?? null;
-  return { hasClass: Boolean(session), lesson, closure };
+  return classCalendarLessonsForSelectedClass({
+    selectedClassId: state.selectedClassId,
+    generatedLessons: state.generatedLessons,
+    allCalendarLessons: state.allCalendarLessons,
+  });
 }
 
 function dayLessonsListModal(date: string, lessons: Array<{ lesson: YearPlanLesson; className: string; schoolName: string; subjectName: string | null }>) {
-  const rows = lessons.map((cl) => {
-    const statusLabel = cl.lesson.status === 'completed' ? 'Completed' : cl.lesson.status === 'missed' ? 'Not Completed' : 'Planned';
-    const viewAction = cl.lesson.detailedPlanAttached
-      ? `<button class="ghost-button compact-button" type="button" data-view-lesson="${escapeHtml(cl.lesson.id)}">View Lesson Plan</button>`
-      : '<span style="font-size:11px;color:#64748b">No detailed plan</span>';
-    return `<li style="padding:8px 10px;margin:4px 0;background:#f8fafc;border-radius:6px;display:flex;justify-content:space-between;align-items:center;gap:8px">
-      <div><strong>${escapeHtml(cl.className)}</strong>${cl.subjectName ? ` Â· ${escapeHtml(cl.subjectName)}` : ''}<br><span style="font-size:12px;color:#475569">${escapeHtml(cl.lesson.lessonTitle)} Â· ${statusLabel}</span></div>
-      ${viewAction}
-    </li>`;
-  }).join('');
-  return `<div class="modal-overlay" id="lesson-modal">
-    <div class="modal-card" style="max-width:540px">
-      <div class="modal-header">
-        <div><h3>${escapeHtml(date)}</h3><p>${lessons.length} ${lessons.length === 1 ? 'lesson' : 'lessons'} across all classes</p></div>
-        <button class="ghost-button compact-button modal-close" type="button">${icon('x')}</button>
-      </div>
-      <div class="modal-body"><ul style="list-style:none;padding:0;margin:0">${rows}</ul></div>
-    </div>
-  </div>`;
+  return renderDayLessonsListModalValue(date, lessons, escapeHtml, icon);
 }
 
 function dayClassScheduleModal(date: string, sessions: CalendarClassSessionView[]) {
-  const rows = sessions.map((cl) => {
-    const statusLabel = cl.session.completed ? 'Completed' : 'Scheduled';
-    return `<li style="padding:8px 10px;margin:4px 0;background:#f8fafc;border-radius:6px;display:flex;justify-content:space-between;align-items:center;gap:8px">
-      <div>
-        <strong>${escapeHtml(cl.className)}</strong>${cl.subjectName ? ` Â· ${escapeHtml(cl.subjectName)}` : ''}<br>
-        <span style="font-size:12px;color:#475569">${escapeHtml(cl.schoolName)} Â· ${statusLabel}</span>
-      </div>
-    </li>`;
-  }).join('');
-  return `<div class="modal-overlay" id="lesson-modal">
-    <div class="modal-card" style="max-width:540px">
-      <div class="modal-header">
-        <div><h3>${escapeHtml(date)}</h3><p>${sessions.length} ${sessions.length === 1 ? 'class session' : 'class sessions'}</p></div>
-        <button class="ghost-button compact-button modal-close" type="button">${icon('x')}</button>
-      </div>
-      <div class="modal-body"><ul style="list-style:none;padding:0;margin:0">${rows}</ul></div>
-    </div>
-  </div>`;
+  return renderDayClassScheduleModalValue(date, sessions, escapeHtml, icon);
 }
 
 function lessonDetailModal(lesson: YearPlanLesson, className?: string) {
-  const plan = parseLessonPlan(lesson.lessonObjective);
-  const duration = selectedClass(state)?.periodMinutes ?? 45;
-  const statusLabel = lesson.status === 'completed' ? 'Completed' : lesson.status === 'missed' ? 'Not Completed' : 'Planned';
-  const statusClass = lesson.status === 'completed' ? 'status-completed' : lesson.status === 'missed' ? 'status-missed' : '';
-  const statusActions = lesson.isBuffer
-    ? ''
-    : `<div class="top-actions" style="margin-top:14px">
-        <button class="lesson-btn completed-btn" data-mark-lesson="${escapeHtml(lesson.id)}" data-status="completed" title="Mark completed">${icon('check-circle')} Done</button>
-        <button class="lesson-btn missed-btn" data-mark-lesson="${escapeHtml(lesson.id)}" data-status="missed" title="Mark not completed">${icon('alert-circle')} Not completed</button>
-      </div>`;
-  let bodyHtml = '';
-  if (!plan) {
-    if (lesson.isBuffer) {
-      bodyHtml = `<p><strong>Flex day:</strong> this date is reserved for review, reteaching, or catch-up. You can generate activities for this day while keeping it marked as flex for later rescheduling.</p>`;
-    } else {
-      bodyHtml = `<p>${escapeHtml(lesson.lessonObjective ?? 'No lesson plan details available.')}</p>`;
-    }
-  } else {
-    const flexDayNote = lesson.isBuffer
-      ? `<p><strong>Flex day:</strong> this stays marked as a flex/catch-up day, but now includes optional classroom activities you can run if no makeup lesson is needed.</p>`
-      : '';
-    const backwardDesign = (plan as unknown as { backwardDesign?: unknown }).backwardDesign;
-    const backwardDesignBlock = backwardDesign && typeof backwardDesign === 'object'
-      ? `<div class="bd-section"><h4>Backward Design Template</h4><details open><summary class="label">Full structured plan</summary><pre style="white-space:pre-wrap;line-height:1.35;font-size:12px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;max-height:360px;overflow:auto">${escapeHtml(JSON.stringify(backwardDesign, null, 2))}</pre></details></div>`
-      : '';
-    bodyHtml = `
-      ${flexDayNote}
-      <div class="bd-section"><h4>Learning Objective</h4><p>${escapeHtml(plan.objective)}</p></div>
-      <div class="bd-section"><h4>Transfer Goal</h4><p>${escapeHtml(plan.transferGoal)}</p></div>
-      <div class="bd-section"><h4>Enduring Understanding</h4><p>${escapeHtml(plan.enduringUnderstanding)}</p></div>
-      <div class="bd-section"><h4>Essential Vocabulary</h4><ul>${plan.vocabulary.map((v) => `<li>${escapeHtml(v)}</li>`).join('')}</ul></div>
-      <div class="bd-section"><h4>Guiding Questions</h4><ul>${plan.essentialQuestions.map((q) => `<li>${escapeHtml(q)}</li>`).join('')}</ul></div>
-      <div class="bd-section"><h4>Knowledge</h4><ul>${plan.knowledge.map((k) => `<li>${escapeHtml(k)}</li>`).join('')}</ul></div>
-      <div class="bd-section"><h4>Skills</h4><ul>${plan.skills.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ul></div>
-      <div class="bd-section"><h4>Success Criteria</h4><ul>${plan.successCriteria.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul></div>
-      <div class="bd-section"><h4>Assessment Evidence</h4><p>${escapeHtml(plan.assessment)}</p>${plan.performanceTask ? `<p><strong>Performance Task:</strong> ${escapeHtml(plan.performanceTask)}</p>` : ''}</div>
-      <div class="bd-section"><h4>Learning Plan</h4><table class="flow-table"><thead><tr><th>Stage</th><th>Time</th><th>Activity</th></tr></thead><tbody>${plan.lessonFlow.map((step) => `<tr><td>${escapeHtml(step.phase)}</td><td>${escapeHtml(step.time)}</td><td>${escapeHtml(step.description)}</td></tr>`).join('')}</tbody></table></div>
-      <div class="bd-section"><h4>Materials</h4><ul>${plan.materials.map((m) => `<li>${escapeHtml(m)}</li>`).join('')}</ul></div>
-      <div class="bd-section"><h4>Differentiation</h4><p>${escapeHtml(plan.differentiation).replace(/\n/g, '<br>')}</p></div>
-      ${plan.homework ? `<div class="bd-section"><h4>Homework / Follow-Up</h4><p>${escapeHtml(plan.homework)}</p></div>` : ''}
-      ${plan.crossCurricular ? `<div class="bd-section"><h4>Cross-Curricular Connections</h4><p>${escapeHtml(plan.crossCurricular)}</p></div>` : ''}
-      ${backwardDesignBlock}
-    `;
-  }
-  return `<div class="modal-overlay" id="lesson-modal">
-    <div class="modal-card">
-      <div class="modal-header">
-        <div>
-          <h3>${escapeHtml(lesson.lessonTitle)}</h3>
-          <p>${className ? escapeHtml(className) + ' Â· ' : ''}${escapeHtml(lesson.teachingDate)} Â· ${escapeHtml(capitalize(lesson.weekday))} Â· ${duration} min Â· <span class="${statusClass}">${statusLabel}</span></p>
-        </div>
-        <button class="ghost-button compact-button modal-close" type="button">${icon('x')}</button>
-      </div>
-      <div class="modal-body">${bodyHtml}${statusActions}</div>
-    </div>
-  </div>`;
+  return renderLessonDetailModalValue({
+    lesson,
+    className,
+    periodMinutes: selectedClass(state)?.periodMinutes ?? 45,
+    teacherName: state.teacherProfile.name,
+    parseLessonPlan,
+    escapeHtml,
+    capitalize,
+    icon,
+  });
 }
 
 // ==================== SYLLABUS PAGE ====================
@@ -1563,56 +1391,22 @@ function collectReviewedUnits() {
   });
 }
 
-function classroomSubmissionFor(testId: string, studentId: string) {
-  const rows = state.classroomTestSubmissions[testId] ?? [];
-  return rows.find((row) => row.studentId === studentId) ?? null;
+function matrixStatusKey(assessmentId: string, studentId: string) {
+  return `${assessmentId}:${studentId}`;
 }
 
 function renderClassroomTestsTab() {
-  if (state.tests.length === 0) {
-    return `<section class="panel">${emptyState('No tests created', 'Create tests in the main Tests page, then upload student files here.')}</section>`;
-  }
-  if (state.students.length === 0) {
-    return `<section class="panel">${emptyState('No students in class', 'Add students first, then upload test submissions in this matrix.')}</section>`;
-  }
-  return `
-    <section class="panel classroom-tests-panel">
-      <div class="panel-head">
-        <div><p class="eyebrow">Classroom tests</p><h2>Student uploads by test</h2></div>
-        <span>${state.students.length} students · ${state.tests.length} tests</span>
-      </div>
-      <div class="classroom-tests-matrix-wrap">
-        <table class="classroom-tests-matrix">
-          <thead>
-            <tr>
-              <th>Student</th>
-              ${state.tests.map((test) => `<th>${escapeHtml(test.title)}</th>`).join('')}
-            </tr>
-          </thead>
-          <tbody>
-            ${state.students.map((student) => `
-              <tr>
-                <th>${escapeHtml(student.fullName)}</th>
-                ${state.tests.map((test) => {
-                  const sub = classroomSubmissionFor(test.id, student.id);
-                  const fileLabel = sub?.fileName ? `<span class="submission-file">${escapeHtml(sub.fileName)}</span>` : '<span class="submission-file empty">No file</span>';
-                  const scoreLabel = sub?.scoreValue != null ? `<span class="test-row-status completed">Scored ${sub.scoreValue}</span>` : '<span class="test-row-status pending">Pending</span>';
-                  return `<td>
-                    <div class="classroom-test-cell">
-                      ${fileLabel}
-                      ${scoreLabel}
-                      <input type="file" data-upload-matrix="1" data-matrix-assessment="${escapeHtml(test.id)}" data-matrix-student="${escapeHtml(student.id)}" accept=".pdf,.doc,.docx,.txt,.md,.csv,.json,.xml,.html,.htm,image/*,audio/*" />
-                    </div>
-                  </td>`;
-                }).join('')}
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-      <p class="settings-detail">Use the main Tests page for creating tests and running full auto-scoring/export.</p>
-    </section>
-  `;
+  return renderClassroomTestsTabView({
+    tests: state.tests,
+    students: state.students,
+    classroomTestSubmissions: state.classroomTestSubmissions,
+    matrixStatus: state.classroomMatrixStatus,
+    matrixLastGradedAt: state.classroomMatrixLastGradedAt,
+    gradeAllBusy: state.classroomMatrixGradeAllBusy,
+    compactMode: state.classroomMatrixCompactMode,
+    emptyState,
+    escapeHtml,
+  });
 }
 
 function collectSyllabusSectionsForTestDraft(): TestSyllabusSection[] {
@@ -1717,46 +1511,7 @@ function openTestSyllabusSectionPickerModal(sections: TestSyllabusSection[]): Pr
 }
 
 function buildDetailedPlanningContext(lessons: YearPlanLesson[]) {
-  const teachingLessons = lessons.filter((lesson) => !lesson.isBuffer);
-  if (teachingLessons.length === 0) return '';
-
-  const unitCounts = new Map<string, number>();
-  const monthUnits = new Map<string, Map<string, number>>();
-
-  for (const lesson of teachingLessons) {
-    const unit = lesson.lessonTitle.split(':')[0]?.trim() || lesson.lessonTitle.trim() || 'General progression';
-    unitCounts.set(unit, (unitCounts.get(unit) ?? 0) + 1);
-    const monthKey = lesson.teachingDate.slice(0, 7);
-    const monthMap = monthUnits.get(monthKey) ?? new Map<string, number>();
-    monthMap.set(unit, (monthMap.get(unit) ?? 0) + 1);
-    monthUnits.set(monthKey, monthMap);
-  }
-
-  const topUnits = Array.from(unitCounts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
-    .map(([unit, count]) => `${unit} (${count} lessons)`);
-
-  const monthLines = Array.from(monthUnits.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([month, units]) => {
-      const focus = Array.from(units.entries())
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 4)
-        .map(([unit, count]) => `${unit} (${count})`)
-        .join(', ');
-      return `${month}: ${focus}`;
-    });
-
-  const context = [
-    'Year pacing context for this class:',
-    `Year goal trajectory: ${topUnits.join(', ')}`,
-    'Month-by-month focus goals:',
-    ...monthLines,
-    'Keep each lesson aligned to this yearly and monthly progression while preserving backward design structure.',
-  ].join('\n');
-
-  return context.slice(0, 3200);
+  return buildDetailedPlanningContextValue(lessons);
 }
 
 type DetailedGenerationOptions = {
@@ -2406,31 +2161,23 @@ function renderLessonPlans() {
   syncLessonExportSelection(groups, state.lessonExportScope);
   const selectedCount = selectedLessonExportGroups(groups, state.lessonExportScope).length;
   const detailedCount = lessons.filter((lesson) => parseLessonPlan(lesson.lessonObjective)).length;
-  return `
-    <section class="lesson-plans-grid">
-      <article class="panel lesson-export-panel animate-fade-in-up delay-100">
-        <p class="eyebrow">Lesson plans</p>
-        <h2>Export teaching plans</h2>
-        <p>Review generated plans, then export by lesson, week, month, or year.</p>
-        <div class="class-calendar-summary">
-          <div><span>School</span><strong>${escapeHtml(selectedSchool(state)?.name ?? 'No school')}</strong></div>
-          <div><span>Class</span><strong>${escapeHtml(selectedClass(state)?.name ?? 'No class')}</strong></div>
-          <div><span>Lessons</span><strong>${lessons.length}</strong></div>
-          <div><span>Detailed</span><strong>${detailedCount}/${lessons.filter((lesson) => !lesson.isBuffer).length}</strong></div>
-        </div>
-        <p class="settings-detail">Use the Syllabus page to generate and attach detailed lesson plans.</p>
-        <div class="segmented lesson-scope-control">${(['lesson', 'week', 'month', 'year'] as LessonExportScope[]).map((scope) => `<button type="button" class="${state.lessonExportScope === scope ? 'active' : ''}" data-lesson-export-scope="${scope}">${capitalize(scope)}</button>`).join('')}</div>
-        <div class="lesson-format-row"><span class="label">Format</span><div class="segmented">${(['html', 'md', 'txt', 'docx', 'pdf'] as LessonExportFormat[]).map((fmt) => `<button type="button" class="${state.lessonExportFormat === fmt ? 'active' : ''}" data-lesson-export-format="${fmt}">${fmt.toUpperCase()}</button>`).join('')}</div></div>
-      </article>
-      <article class="panel animate-fade-in-up delay-200">
-        <p class="eyebrow">Export</p>
-        <h2>${escapeHtml(exportScopeTitle(state.lessonExportScope))}</h2>
-        ${groups.length > 0
-          ? `<div class="lesson-export-toolbar"><label class="lesson-select-all"><input id="lesson-select-all" type="checkbox" ${selectedCount === groups.length ? 'checked' : ''} /><span>Select all</span></label><button id="export-selected-groups" class="primary-button compact-button" type="button" ${selectedCount > 0 ? '' : 'disabled'}>${icon('upload')} Export selected (${selectedCount})</button></div>${lessonExportPreview(groups, state.lessonExportScope)}`
-          : emptyState('No lesson plan', 'Upload a syllabus, review sections, and generate a class plan first.')}
-      </article>
-    </section>
-  `;
+  return renderLessonPlansPage({
+    schoolName: selectedSchool(state)?.name ?? 'No school',
+    className: selectedClass(state)?.name ?? 'No class',
+    lessonCount: lessons.length,
+    detailedCount,
+    nonBufferLessonCount: lessons.filter((lesson) => !lesson.isBuffer).length,
+    scope: state.lessonExportScope,
+    format: state.lessonExportFormat,
+    exportScopeTitle: exportScopeTitle(state.lessonExportScope),
+    groupsCount: groups.length,
+    selectedCount,
+    exportPreviewMarkup: lessonExportPreview(groups, state.lessonExportScope),
+    icon,
+    escapeHtml,
+    emptyState,
+    capitalize,
+  });
 }
 
 function sortedGeneratedLessons() {
@@ -2438,10 +2185,7 @@ function sortedGeneratedLessons() {
 }
 
 function exportScopeTitle(scope: LessonExportScope) {
-  if (scope === 'lesson') return 'By lesson';
-  if (scope === 'week') return 'By week';
-  if (scope === 'month') return 'By month';
-  return 'Full year';
+  return exportScopeTitleValue(scope);
 }
 
 function lessonExportPreview(
@@ -2483,21 +2227,7 @@ function exportGroupPreviewModal(
 }
 
 function groupLessonsForExport(lessons: YearPlanLesson[], scope: LessonExportScope) {
-  if (scope === 'lesson') return lessons.map((l) => ({ key: l.teachingDate, title: `${l.teachingDate} - ${l.lessonTitle}`, lessons: [l] }));
-  const groups = new Map<string, YearPlanLesson[]>();
-  for (const lesson of lessons) {
-    const date = parseYmdUtc(lesson.teachingDate);
-    const key = scope === 'week' ? weekKey(date ?? new Date(`${lesson.teachingDate}T00:00:00`)) : scope === 'month' ? lesson.teachingDate.slice(0, 7) : lesson.teachingDate.slice(0, 4);
-    groups.set(key, [...(groups.get(key) ?? []), lesson]);
-  }
-  return Array.from(groups.entries()).map(([key, gl]) => ({ key, title: exportGroupTitle(key, scope), lessons: gl }));
-}
-
-function exportGroupTitle(key: string, scope: LessonExportScope) {
-  if (scope === 'week') return `Week of ${key}`;
-  if (scope === 'month') { const d = parseYmdUtc(`${key}-01`); return d ? d.toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }) : key; }
-  if (scope === 'year') return key;
-  return key;
+  return groupLessonsForExportValue(lessons, scope);
 }
 
 function exportGroupSelectionId(
@@ -2526,42 +2256,15 @@ function selectedLessonExportGroups(
 }
 
 function splitUnitAndTopic(lessonTitle: string) {
-  const [unitPart, ...topicParts] = lessonTitle.split(':');
-  const unit = unitPart.trim();
-  const topic = topicParts.join(':').trim();
-  return { unit, topic };
+  return splitUnitAndTopicValue(lessonTitle);
 }
 
 function previewUnitTags(lessons: YearPlanLesson[], limit = 3) {
-  const seen = new Set<string>();
-  const tags: string[] = [];
-  for (const lesson of lessons) {
-    const { unit } = splitUnitAndTopic(lesson.lessonTitle);
-    const normalized = unit.trim();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    tags.push(normalized);
-    if (tags.length >= limit) break;
-  }
-  return tags;
+  return previewUnitTagsValue(lessons, limit);
 }
 
 function scopedPeriodLabel(group: { key: string; title: string }, scope: LessonExportScope) {
-  if (scope === 'week') {
-    const start = parseYmdUtc(group.key);
-    if (!start) return group.title;
-    const end = new Date(start);
-    end.setUTCDate(end.getUTCDate() + 6);
-    const startIso = formatYmdUtc(start);
-    const endIso = formatYmdUtc(end);
-    return `${shortDate(startIso)} - ${shortDate(endIso)}`;
-  }
-  if (scope === 'month') {
-    const date = parseYmdUtc(`${group.key}-01`);
-    return date ? date.toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }) : group.title;
-  }
-  if (scope === 'year') return group.key;
-  return group.title;
+  return scopedPeriodLabelValue(group, scope);
 }
 
 function renderLessonPreviewHeading(
@@ -2584,8 +2287,7 @@ function lessonPreviewSummary(
   group: { key: string; title: string; lessons: YearPlanLesson[] },
   scope: LessonExportScope,
 ) {
-  if (scope === 'lesson') return 'Single lesson export group';
-  return group.lessons.slice(0, 3).map((lesson) => lesson.lessonTitle).join(', ');
+  return lessonPreviewSummaryValue(group, scope);
 }
 
 function humanizePlanKey(key: string) {
@@ -2808,80 +2510,102 @@ ${bodyHtml}</body></html>`;
 // ==================== AGENTS PAGE ====================
 
 function renderAgents() {
-  const grouped = groupAgentInsights();
-  return `
-    <section class="agent-toolbar animate-fade-in-up delay-100">
-      <div><p class="eyebrow">AI Workers</p><h2>Intelligent agents</h2><p>Agents run automatically when you select a class. They analyse attendance, pacing, performance, assignments, engagement, and reports.</p></div>
-      <button id="run-agents" class="primary-button" type="button" ${selectedClass(state) ? '' : 'disabled'}>${icon('cpu')} Run agents now</button>
-    </section>
-    <section class="agent-grid">${agentCards.map((agent, index) => {
-      const agentInsights = grouped[agent.type] ?? [];
-      const activeCount = agentInsights.length;
-      const maxSeverity = agentInsights.reduce((max, i) => i.severity === 'high' ? 'high' : max, 'neutral');
-      const cardTone = maxSeverity === 'high' ? 'amber' : maxSeverity === 'warning' ? agent.color : 'idle';
-      return `<article class="agent-card ${agent.color} animate-fade-in-up" style="animation-delay: ${(index * 50) + 200}ms"><div class="agent-icon">${icon(agent.icon)}</div><label class="switch"><input type="checkbox" data-agent-toggle="${agent.type}" checked /><span></span></label><h2>${agent.title}</h2><p>${agent.body}</p>${activeCount > 0 ? `<span class="agent-badge ${cardTone}">${activeCount} signal${activeCount === 1 ? '' : 's'}</span>` : '<span class="agent-badge idle">No signals</span>'}</article>`;
-    }).join('')}</section>
-    ${state.insights.length > 0 ? `<div class="panel animate-fade-in-up delay-400" style="padding:0;overflow:hidden"><div class="syllabus-review-header" style="padding:14px 18px"><p class="eyebrow">Agent insights</p><span>${state.insights.length} total</span></div><div class="agent-insight-list">${state.insights.map((insight) => `<div class="agent-insight-row ${insight.severity}"><span class="agent-insight-severity ${insight.severity}">${capitalize(insight.severity)}</span><div class="agent-insight-body"><strong>${escapeHtml(insight.title)}</strong><p>${escapeHtml(insight.body)}</p></div><span class="agent-insight-type">${capitalize(insight.agentType)}</span></div>`).join('')}</div></div>` : `<div class="panel animate-fade-in-up delay-400"><div class="panel-head"><h2>Recent insights</h2></div>${emptyState('No insights yet', 'Select a class to run agents automatically. Insights appear here when agents detect patterns.')}</div>`}
-  `;
-}
-
-function groupAgentInsights(): Record<string, typeof state.insights> {
-  const groups: Record<string, typeof state.insights> = {};
-  for (const insight of state.insights) { (groups[insight.agentType] ??= []).push(insight); }
-  return groups;
+  return renderAgentsPage({
+    hasSelectedClass: Boolean(selectedClass(state)),
+    cards: AGENT_CARDS,
+    insights: state.insights,
+    groupedInsights: groupInsightsByAgentType(state.insights),
+    icon,
+    escapeHtml,
+    emptyState,
+    capitalize,
+  });
 }
 
 // ==================== TESTS PAGE ====================
 
 function renderTests() {
   const activeClass = selectedClass(state);
-  const hasClass = Boolean(activeClass);
-  const selectedTest = state.tests.find((t) => t.id === state.currentTestId);
-  return `
-    <section class="tests-layout">
-      <article class="panel tests-create-panel">
-        <p class="eyebrow">Tests</p><h2>Create a new test</h2><p>Design a test for your class. Add instructions for the LLM, scoring rules, then collect student submissions.</p>
-        <form id="test-create-form" class="tests-create-form">
-          <div class="tests-create-actions">
-            <button id="test-generate-syllabus" class="ghost-button" type="button" ${hasClass ? '' : 'disabled'}>${icon('book')} Create from syllabus</button>
-            <span class="input-hint">Auto-fills detailed test instructions and rubric from this level's syllabus units.</span>
-          </div>
-          <label><span class="label">Test title</span><input id="test-title" type="text" placeholder="e.g. Unit 3 Algebra Quiz" ${hasClass ? '' : 'disabled'} /></label>
-          <label><span class="label">Instructions for assessment</span><textarea id="test-instructions" rows="4" placeholder="Describe what the test covers..." ${hasClass ? '' : 'disabled'}></textarea></label>
-          <label><span class="label">Scoring rubric</span><textarea id="test-rubric" rows="3" placeholder="Define the scoring criteria..." ${hasClass ? '' : 'disabled'}></textarea></label>
-          <label><span class="label">Maximum score</span><input id="test-max-score" type="number" min="1" max="1000" value="100" ${hasClass ? '' : 'disabled'} /></label>
-          <button class="primary-button" type="submit" ${hasClass ? '' : 'disabled'}>${icon('check-circle')} Create test</button>
-        </form>
-      </article>
-      <article class="panel"><div class="panel-head"><p class="eyebrow">Existing tests</p><h2>${activeClass ? escapeHtml(activeClass.name) : 'No class'}</h2></div>${state.tests.length === 0 ? emptyState('No tests yet', 'Create a test using the form. Once created, you can collect submissions and score them.') : `<div class="tests-list">${state.tests.map((test) => `<div class="test-row ${test.id === state.currentTestId ? 'active' : ''}" data-select-test="${escapeHtml(test.id)}"><div class="test-row-info"><strong>${escapeHtml(test.title)}</strong><span>${escapeHtml(test.status)} Â· ${escapeHtml(test.createdAt.slice(0, 10))}</span></div><span class="test-row-status ${test.status}">${test.status === 'completed' ? 'Completed' : 'Pending'}</span></div>`).join('')}</div>`}</article>
-      ${selectedTest ? `
-        <article class="panel tests-submissions-panel">
-          <div class="panel-head"><div><p class="eyebrow">Submissions</p><h2>${escapeHtml(selectedTest.title)}</h2></div><div class="tests-actions"><button id="auto-score-test" class="primary-button" type="button">${icon('cpu')} Auto-score all</button><button id="export-test-results" class="ghost-button" type="button">${icon('upload')} Export</button></div></div>
-          <p>${escapeHtml(selectedTest.instructions)}</p>
-          <div class="tests-max-score"><span>Max score:</span> <strong>${selectedTest.maxScore}</strong></div>
-          <p class="input-hint">Upload PDF, DOC/DOCX, TXT/MD/CSV/JSON/XML/HTML, image, or audio. Image OCR uses local <code>tesseract</code>; audio transcription uses local <code>whisper</code>. DOC/DOCX uses <code>pandoc</code> when available.</p>
-          ${state.testSubmissions.length === 0 ? emptyState('No submissions loaded', 'Select a test above to load submissions.') : `<div class="tests-submissions-grid">${state.testSubmissions.map((sub) => `<div class="submission-card"><div class="submission-head"><strong>${escapeHtml(sub.studentName)}</strong><span class="submission-status ${sub.status}">${sub.status === 'scored' ? 'Scored' : 'Pending'}</span></div><div class="submission-files">${sub.fileName ? `<span class="submission-file">${escapeHtml(sub.fileName)} <button type="button" class="compact-button ghost-button" data-view-file="${escapeHtml(sub.attachmentId ?? '')}">View</button></span>` : '<span class="submission-file empty">No file submitted</span>'}</div><label class="submission-score-field"><span class="label">Score</span><input type="number" min="0" max="${selectedTest.maxScore}" step="0.5" value="${sub.scoreValue ?? ''}" data-score-student="${escapeHtml(sub.studentId)}" placeholder="-" /></label><label class="submission-comment-field"><span class="label">Feedback</span><textarea data-comment-student="${escapeHtml(sub.studentId)}" rows="2" placeholder="Add feedback">${escapeHtml(sub.teacherComment ?? '')}</textarea></label><label class="submission-upload-field"><span class="label">Upload file</span><input type="file" data-upload-student="${escapeHtml(sub.studentId)}" accept=".pdf,.doc,.docx,.txt,.md,.csv,.json,.xml,.html,.htm,image/*,audio/*" /></label><button type="button" class="ghost-button compact-button" data-save-score="${escapeHtml(sub.studentId)}">Save</button></div>`).join('')}</div>`}
-        </article>` : ''}
-    </section>
-  `;
+  return renderTestsPage({
+    activeClassName: activeClass?.name ?? null,
+    tests: state.tests,
+    currentTestId: state.currentTestId,
+    testSubmissions: state.testSubmissions,
+    icon,
+    escapeHtml,
+    emptyState,
+  });
+}
+
+function focusWorkflowTarget(selector: string): boolean {
+  const target = document.querySelector<HTMLElement>(selector);
+  if (!target) return false;
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target instanceof HTMLButtonElement) {
+    target.focus();
+  }
+  return true;
+}
+
+function jumpToWorkflowStep(step: string) {
+  if (step === '1') {
+    state.page = 'overview';
+    render();
+    if (!focusWorkflowTarget('#school-name')) showToast('School setup form is not available yet.');
+    return;
+  }
+  if (step === '2') {
+    state.page = 'overview';
+    render();
+    if (!focusWorkflowTarget('#class-name')) showToast('Create a school first to unlock class setup.');
+    return;
+  }
+  if (step === '3') {
+    state.page = 'syllabus';
+    render();
+    if (!focusWorkflowTarget('#syllabus-file')) showToast('Select a class first, then upload a syllabus.');
+    return;
+  }
+  if (step === '4') {
+    state.page = 'syllabus';
+    render();
+    if (!focusWorkflowTarget('#generate-reviewed-plan')) showToast('Upload syllabus units first, then generate the lesson schedule.');
+    return;
+  }
+  if (step === '5') {
+    state.page = 'syllabus';
+    render();
+    if (!focusWorkflowTarget('#syllabus-generate-detailed-plans')) showToast('Generate a lesson schedule first.');
+    return;
+  }
+  if (step === '6') {
+    state.page = 'syllabus';
+    render();
+    if (!focusWorkflowTarget('#syllabus-attach-detailed-plans')) showToast('Generate detailed lesson plans first.');
+    return;
+  }
+  if (step === '7') {
+    state.page = 'classrooms';
+    state.classTab = 'students';
+    render();
+    if (!focusWorkflowTarget('#student-full-name')) showToast('Select a class first, then add students.');
+  }
 }
 
 // ==================== REPORTS PAGE ====================
-
 function renderReports() {
   const activeClass = selectedClass(state);
-  const hasClass = Boolean(activeClass);
-  return `
-    <section class="reports-layout">
-      <article class="panel">
-        <p class="eyebrow">Student reports</p><h2>Generate reports for ${escapeHtml(activeClass?.name ?? 'a class')}</h2><p>Reports include attendance data, assessment scores, and performance trends. Select a class and add any specific instructions for the report content.</p>
-        <label style="display:flex;flex-direction:column;gap:4px;margin:var(--space-3) 0"><span class="label">Instructions for report generation</span><textarea id="report-instructions" rows="3" style="font-family:inherit;font-size:13px;resize:vertical" placeholder="Optional: add focus areas, tone preferences, or specific points to include...">${escapeHtml(state.reportInstructions)}</textarea></label>
-        <label style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-3)"><span class="label" style="white-space:nowrap">Word count:</span><input id="report-word-count" type="number" min="80" max="2000" value="${state.reportWordCount}" style="width:80px;min-height:0;padding:4px 8px;font-size:14px" /></label>
-        <button id="generate-all-reports" class="primary-button" type="button" ${hasClass && state.students.length > 0 ? '' : 'disabled'}>${icon('book')} Generate reports for all students</button>
-      </article>
-      ${hasClass ? `<div class="panel" style="padding:0;overflow:hidden;grid-column:1/-1"><div class="syllabus-review-header" style="padding:14px 18px"><p class="eyebrow">Students</p><span>${state.students.length} total</span></div><div class="reports-grid">${state.students.map((student) => { const status = state.reportStatuses.find((r) => r.studentId === student.id); const hasReport = status?.reportExists ?? false; return `<div class="report-student-card"><div class="report-student-head"><strong>${escapeHtml(student.fullName)}</strong>${hasReport ? '<span class="test-row-status completed">Done</span>' : '<span class="test-row-status pending">No report</span>'}</div>${hasReport ? `<div class="report-actions"><button type="button" class="ghost-button compact-button" data-view-report="${escapeHtml(status!.reportId!)}">View</button><button type="button" class="ghost-button compact-button" data-export-report="${escapeHtml(status!.reportId!)}">${icon('upload')} Export</button></div>` : ''}</div>`; }).join('')}</div></div>` : ''}
-    </section>
-  `;
+  return renderReportsPage({
+    activeClassName: activeClass?.name ?? null,
+    classes: state.classes,
+    selectedClassId: state.selectedClassId,
+    students: state.students,
+    reportStatuses: state.reportStatuses,
+    reportInstructions: state.reportInstructions,
+    reportWordCount: state.reportWordCount,
+    icon,
+    escapeHtml,
+  });
 }
 
 // ==================== SETTINGS PAGE ====================
@@ -2898,6 +2622,9 @@ function renderSettings() {
   const statusIcon = config?.available || hasModels ? 'check-circle' : 'alert-circle';
   const statusClass = config?.available ? 'notice-ok' : hasModels ? 'notice-info' : 'notice-warn';
   const statusText = llmStatusText(config, providerName, hasModels);
+  const backupPathHtml = lastDatabaseBackupPath
+    ? `<div class="diag-storage" style="margin-top:10px"><p><strong>Last backup:</strong> ${escapeHtml(lastDatabaseBackupPath)}</p></div>`
+    : '';
   return `
     <section class="settings-grid">
       <article class="panel animate-fade-in-up delay-100">
@@ -2912,7 +2639,10 @@ function renderSettings() {
         </form>
       </article>
       <article class="panel animate-fade-in-up delay-100">
-        <p class="eyebrow">Language model</p><h2>Local model settings</h2>
+        <div class="panel-head">
+          <div><p class="eyebrow">Language model</p><h2>Local model settings</h2></div>
+          <button id="open-llm-setup-wizard" class="ghost-button compact-button" type="button">${icon('cpu')} Guided setup</button>
+        </div>
         <form id="provider-form" class="settings-form">
           <label><span class="label">Provider</span><select id="provider-select"><option value="ollama" ${config?.provider === 'ollama' ? 'selected' : ''}>Ollama</option><option value="opencode" ${config?.provider === 'opencode' ? 'selected' : ''}>OpenCode</option></select></label>
           <label><span class="label">Model</span><select id="model-select" ${state.llmModels.length === 0 ? 'disabled' : ''}>${state.llmModels.length === 0 ? '<option value="">No models found</option>' : state.llmModels.map((m) => `<option value="${escapeHtml(m.id)}" ${config?.model === m.id ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}</select></label>
@@ -2920,6 +2650,7 @@ function renderSettings() {
         </form>
         <div class="notice ${statusClass}">${icon(statusIcon)}<span>${statusText}</span></div>
         ${config?.detail && !config.available ? `<p class="settings-detail">${escapeHtml(config.detail)}</p>` : ''}
+        ${!config?.available ? '<p class="settings-detail"><strong>New here?</strong> Use Guided setup above for an in-app walkthrough.</p>' : ''}
       </article>
       <article class="panel animate-fade-in-up delay-200">
         <div class="panel-head">
@@ -2956,9 +2687,21 @@ function renderSettings() {
         <p class="eyebrow">Data philosophy</p><h2>No synthetic data</h2><p>EduTrack displays honest empty states when local records don't exist. No demo metrics or fallback data.</p>
       </article>
       <article class="panel animate-fade-in-up delay-400">
+        <div class="panel-head">
+          <div><p class="eyebrow">Backup and recovery</p><h2>Export SQLite backup</h2></div>
+          <button id="export-db-backup" class="primary-button" type="button" ${state.backend ? '' : 'disabled'}>${icon('upload')} Export backup</button>
+        </div>
+        <p class="settings-detail">Create a full database snapshot before device changes, app updates, or history cleanup. Weekly auto-backup runs at app startup when 7+ days have passed since the last automatic backup.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <button id="copy-db-backup-path" class="ghost-button compact-button" type="button" ${lastDatabaseBackupPath ? '' : 'disabled'}>${icon('book')} Copy last backup path</button>
+        </div>
+        ${backupPathHtml}
+      </article>
+      <article class="panel animate-fade-in-up delay-400">
         <p class="eyebrow">Danger zone</p><h2>Clear school history</h2><p>Permanently delete all data (levels, classes, students, attendance, assessments, reports) for a selected school. This cannot be undone.</p>
         <div style="display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap"><select id="clear-school-select" style="flex:1;min-width:180px"><option value="">Select a school</option>${state.schools.map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('')}</select><button id="clear-school-btn" class="danger-button" type="button" disabled>Clear all data</button></div>
       </article>
+      ${renderLlmSetupWizard()}
     </section>
   `;
 }
@@ -2969,6 +2712,91 @@ function llmStatusText(config: LlmConfig | null, providerName: string, hasModels
   if (config.available) return `${providerName} CLI detected - ${modelCount} listed (billing/quota checked at request time)`;
   if (hasModels) return `${providerName} CLI not detected - showing ${modelCount} listed models`;
   return `${providerName} unavailable - no models found`;
+}
+
+async function refreshLlmSetupWizardState() {
+  llmSetupBusy = true;
+  render();
+  try {
+    await refreshGradingDiagnostics();
+    await loadModels(state, llmSetupProvider);
+    if (!state.llmModels.some((model) => model.id === llmSetupModel)) {
+      llmSetupModel = state.llmModels[0]?.id ?? '';
+    }
+    const hasModels = state.llmModels.length > 0;
+    if (llmSetupProvider === 'opencode') {
+      const opencodeReady = Boolean(state.gradingDiagnostics?.tools.find((tool) => tool.key === 'opencode')?.available);
+      llmSetupMessage = opencodeReady
+        ? (hasModels ? 'OpenCode is ready and models were detected.' : 'OpenCode is ready. Select a model to continue.')
+        : 'OpenCode is not installed yet. Use Install OpenCode to continue.';
+    } else {
+      llmSetupMessage = hasModels
+        ? 'Ollama models detected. Select one and save.'
+        : 'No Ollama models found yet. Start Ollama and pull a model, then click Refresh checks.';
+    }
+  } finally {
+    llmSetupBusy = false;
+    render();
+  }
+}
+
+function openLlmSetupWizard() {
+  llmSetupProvider = state.llmConfig?.provider === 'ollama' ? 'ollama' : 'opencode';
+  llmSetupModel = state.llmConfig?.model ?? '';
+  llmSetupMessage = '';
+  llmSetupWizardOpen = true;
+  void refreshLlmSetupWizardState();
+}
+
+function closeLlmSetupWizard() {
+  llmSetupWizardOpen = false;
+  llmSetupBusy = false;
+  llmSetupMessage = '';
+  render();
+}
+
+function renderLlmSetupWizard() {
+  if (!llmSetupWizardOpen) return '';
+  const opencodeAvailable = Boolean(state.gradingDiagnostics?.tools.find((tool) => tool.key === 'opencode')?.available);
+  const providerReady = llmSetupProvider === 'opencode'
+    ? opencodeAvailable
+    : state.llmModels.length > 0;
+  const selectedModel = llmSetupModel || state.llmModels[0]?.id || '';
+  return `
+    <div class="modal-overlay" id="llm-setup-modal" aria-hidden="false" role="dialog" aria-modal="true" aria-labelledby="llm-setup-title">
+      <div class="modal-card" style="max-width:680px">
+        <div class="modal-header">
+          <div>
+            <h3 id="llm-setup-title">Guided AI setup</h3>
+            <p>Teacher-friendly setup for reports and planning features.</p>
+          </div>
+          <button class="ghost-button compact-button" type="button" id="llm-setup-close">Close</button>
+        </div>
+        <div class="modal-body">
+          <div class="bd-section">
+            <h4>Step 1: Choose provider</h4>
+            <label><span class="label">Provider</span><select id="llm-setup-provider"><option value="opencode" ${llmSetupProvider === 'opencode' ? 'selected' : ''}>OpenCode (recommended for easiest setup)</option><option value="ollama" ${llmSetupProvider === 'ollama' ? 'selected' : ''}>Ollama</option></select></label>
+          </div>
+          <div class="bd-section">
+            <h4>Step 2: Install / check provider</h4>
+            ${llmSetupProvider === 'opencode'
+              ? `<p>OpenCode can be installed from inside EduTrack.</p><button class="primary-button compact-button" type="button" id="llm-setup-install-opencode" ${opencodeAvailable || llmSetupBusy ? 'disabled' : ''}>${llmSetupBusy ? '<span class="spinner"></span> Working...' : icon('upload')} ${opencodeAvailable ? 'OpenCode installed' : 'Install OpenCode'}</button>`
+              : `<p>For Ollama: open the Ollama app, then pull at least one model (example: <code>ollama pull llama3.1:8b</code>).</p>`}
+            <button class="ghost-button compact-button" type="button" id="llm-setup-refresh" ${llmSetupBusy ? 'disabled' : ''}>${icon('cpu')} Refresh checks</button>
+            <p class="settings-detail">${escapeHtml(llmSetupMessage || 'Run checks to continue.')}</p>
+          </div>
+          <div class="bd-section">
+            <h4>Step 3: Choose model</h4>
+            <label><span class="label">Model</span><select id="llm-setup-model" ${state.llmModels.length === 0 ? 'disabled' : ''}>${state.llmModels.length === 0 ? '<option value="">No models detected</option>' : state.llmModels.map((model) => `<option value="${escapeHtml(model.id)}" ${selectedModel === model.id ? 'selected' : ''}>${escapeHtml(model.label)}</option>`).join('')}</select></label>
+          </div>
+          <div class="bd-section" style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="primary-button" type="button" id="llm-setup-save" ${(providerReady && Boolean(selectedModel) && !llmSetupBusy) ? '' : 'disabled'}>${icon('check-circle')} Save and enable AI tools</button>
+            <button class="ghost-button" type="button" id="llm-setup-skip">Skip for now</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 async function refreshGradingDiagnostics() {
@@ -3124,6 +2952,12 @@ function bindShellEvents() {
       render();
     });
   });
+
+  document.querySelector<HTMLButtonElement>('#display-density-toggle')?.addEventListener('click', () => {
+    const next = currentDisplayDensity() === 'comfortable' ? 'compact' : 'comfortable';
+    setDisplayDensity(next);
+    render();
+  });
 }
 
 function bindPageEvents() {
@@ -3139,6 +2973,12 @@ function bindPageEvents() {
       applySyllabusPlanningStateForCurrentContext();
       persistSyllabusPlanningState();
       render();
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('[data-workflow-step]').forEach((button) => {
+    button.addEventListener('click', () => {
+      jumpToWorkflowStep(button.dataset.workflowStep ?? '');
     });
   });
 
@@ -3176,23 +3016,25 @@ function bindPageEvents() {
       const school = state.schools.find((item) => item.id === schoolId);
       if (school) {
         const confirmed = await openConfirmModal({
-          id: 'confirm-remove-school',
-          title: `Remove ${school.name}?`,
-          message: 'Levels, classes, students, and school records will be hidden with this school.',
-          confirmLabel: 'Remove school',
+          id: 'confirm-delete-school',
+          title: `Delete ${school.name}?`,
+          message: 'This permanently deletes the school and all related levels, classes, students, lesson plans, schedules, attendance, assessments, and reports.',
+          confirmLabel: 'Delete school',
           cancelLabel: 'Cancel',
           confirmClass: 'danger',
         });
         if (!confirmed) return;
       }
-      await invoke('archive_school', { schoolId });
+      await invoke<DeleteSchoolDataResult>('delete_school_data', { schoolId });
       state.schools = (await invoke<School[]>('get_schools')) ?? [];
       await loadSchoolImages(state);
       if (state.selectedSchoolId === schoolId) { state.selectedSchoolId = state.schools[0]?.id ?? ''; state.selectedLevelId = ''; state.selectedClassId = ''; }
       await loadHierarchy(state);
       await loadSchoolDirectory(state);
+      await loadAllCalendarLessons(state);
+      await loadAllCalendarSessions(state);
       render();
-      showToast('School removed');
+      showToast('School deleted with all related lesson plans and schedules');
     });
   });
 
@@ -3355,86 +3197,48 @@ function bindPageEvents() {
     });
   });
 
-  document.querySelectorAll<HTMLButtonElement>('[data-class-calendar-mode]').forEach((button) => { button.addEventListener('click', () => { state.classCalendarMode = button.dataset.classCalendarMode as ClassCalendarMode; render(); }); });
-  document.querySelectorAll<HTMLButtonElement>('[data-class-calendar-shift]').forEach((button) => { button.addEventListener('click', () => { shiftClassCalendar(Number(button.dataset.classCalendarShift ?? '0')); render(); }); });
-  document.querySelector<HTMLButtonElement>('[data-class-calendar-today]')?.addEventListener('click', () => { state.classCalendarMonth = currentMonthKey(); render(); });
-  document.querySelectorAll<HTMLElement>('.month-day.has-lesson').forEach((el) => {
-    el.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).closest('.lesson-btn, .lesson-actions, [data-open-lesson-plan]')) return;
-      const date = el.dataset.date;
-      if (!date) return;
-      const existing = document.getElementById('lesson-modal');
-      if (existing) existing.remove();
-      const isMainCalendar = state.page === 'calendar';
-      const mainCalendarSessions = isMainCalendar
-        ? state.allCalendarSessions.filter((entry) => entry.session.sessionDate === date)
-        : [];
-      const classLessons = classCalendarLessons()
-        .filter((lesson) => lesson.teachingDate === date)
-        .map((lesson) => ({ lesson, className: selectedClass(state)?.name ?? '', levelName: '', schoolName: '', subjectName: null }));
-      if (isMainCalendar && mainCalendarSessions.length === 0) return;
-      if (!isMainCalendar && classLessons.length === 0) return;
-      let html: string;
-      if (isMainCalendar) {
-        html = dayClassScheduleModal(date, mainCalendarSessions);
-      } else if (classLessons.length === 1) {
-        html = lessonDetailModal(classLessons[0].lesson, classLessons[0].className);
-      } else {
-        html = dayLessonsListModal(date, classLessons);
-      }
-      const wrapper = document.createElement('div');
-      wrapper.innerHTML = html;
-      document.body.appendChild(wrapper.firstElementChild!);
-      const modal = document.getElementById('lesson-modal')!;
-      if (!isMainCalendar) bindLessonStatusButtons(modal);
-      modal.addEventListener('click', (modalEvent) => {
-        if ((modalEvent.target as HTMLElement).closest('.modal-close') || modalEvent.target === modal) {
-          modal.remove();
-        }
-      });
-      modal.querySelectorAll<HTMLElement>('[data-view-lesson]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const lid = btn.dataset.viewLesson;
-          const cl = classLessons.find((lesson) => lesson.lesson.id === lid);
-          if (!cl) return;
-          modal.innerHTML = lessonDetailModal(cl.lesson, cl.className);
-          bindLessonStatusButtons(modal);
-          modal.querySelector<HTMLElement>('.modal-close')?.addEventListener('click', () => modal.remove());
-          modal.addEventListener('click', (me) => { if (me.target === modal) modal.remove(); });
-        });
-      });
-    });
-  });
-  document.querySelectorAll<HTMLButtonElement>('[data-open-lesson-plan]').forEach((button) => {
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const lessonId = button.dataset.openLessonPlan ?? '';
-      const lesson = classCalendarLessons().find((item) => item.id === lessonId);
-      if (!lesson) return;
-      const existing = document.getElementById('lesson-modal');
-      if (existing) existing.remove();
-      const wrapper = document.createElement('div');
-      wrapper.innerHTML = lessonDetailModal(lesson, selectedClass(state)?.name);
-      document.body.appendChild(wrapper.firstElementChild!);
-      const modal = document.getElementById('lesson-modal')!;
-      bindLessonStatusButtons(modal);
-      modal.addEventListener('click', (modalEvent) => {
-        if ((modalEvent.target as HTMLElement).closest('.modal-close') || modalEvent.target === modal) modal.remove();
-      });
-    });
-  });
-  bindLessonStatusButtons(document);
-  document.querySelector<HTMLButtonElement>('#reschedule-missed')?.addEventListener('click', async () => {
-    if (!state.selectedClassId) return;
-    try {
-      const lessons = await invoke<YearPlanLesson[]>('reschedule_missed_lessons', { classId: state.selectedClassId });
-      state.generatedLessons = lessons ?? [];
-      await loadAllCalendarLessons(state);
-      await loadAllCalendarSessions(state);
+  bindClassCalendarTabEvents({
+    onSetMode: (mode) => {
+      state.classCalendarMode = mode;
       render();
-      showToast('Missed lessons rescheduled');
-    } catch (error) { showToast(String(error)); }
+    },
+    onShift: (value) => {
+      shiftClassCalendar(value);
+      render();
+    },
+    onToday: () => {
+      state.classCalendarMonth = currentMonthKey();
+      render();
+    },
+    isMainCalendarPage: () => state.page === 'calendar',
+    getMainCalendarSessionsByDate: (date) => state.allCalendarSessions.filter((entry) => entry.session.sessionDate === date),
+    getClassLessonsByDate: (date) => classCalendarLessons()
+      .filter((lesson) => lesson.teachingDate === date)
+      .map((lesson) => ({
+        lesson,
+        className: selectedClass(state)?.name ?? '',
+        schoolName: selectedSchool(state)?.name ?? '',
+        subjectName: selectedClass(state)?.subjectName ?? null,
+      })),
+    getClassLessonById: (lessonId) => classCalendarLessons().find((item) => item.id === lessonId) ?? null,
+    selectedClassName: () => selectedClass(state)?.name ?? '',
+    renderLessonDetailModal: (lesson, className) => lessonDetailModal(lesson, className),
+    renderDayClassScheduleModal: (date, sessions) => dayClassScheduleModal(date, sessions),
+    renderDayLessonsListModal: (date, lessons) => dayLessonsListModal(date, lessons),
+    bindLessonStatusButtons,
+    onRescheduleMissed: async () => {
+      if (!state.selectedClassId) return;
+      try {
+        const lessons = await invoke<YearPlanLesson[]>('reschedule_missed_lessons', { classId: state.selectedClassId });
+        state.generatedLessons = lessons ?? [];
+        await loadAllCalendarLessons(state);
+        await loadAllCalendarSessions(state);
+        render();
+        showToast('Missed lessons rescheduled');
+      } catch (error) {
+        showToast(String(error));
+      }
+    },
   });
   document.querySelectorAll<HTMLButtonElement>('[data-calendar-mode]').forEach((button) => { button.addEventListener('click', () => { state.calendarMode = button.dataset.calendarMode as CalendarMode; render(); }); });
   document.querySelectorAll<HTMLButtonElement>('[data-calendar-shift]').forEach((button) => { button.addEventListener('click', () => { shiftCalendar(Number(button.dataset.calendarShift ?? '0')); render(); }); });
@@ -3518,22 +3322,73 @@ function bindPageEvents() {
     showToast(`Exported ${selectedGroups.length} group${selectedGroups.length === 1 ? '' : 's'} as ${state.lessonExportFormat.toUpperCase()}`);
   });
 
-  document.querySelectorAll<HTMLButtonElement>('[data-attendance-cell]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const sessionId = button.dataset.sessionId ?? '';
-      const studentId = button.dataset.studentId ?? '';
-      if (!sessionId || !studentId) return;
-      const current = attendanceFor(studentId, sessionId);
-      const status = nextAttendanceStatus(current?.status ?? '');
+  bindClassroomAttendanceEvents({
+    onAdvanceAttendance: async (sessionId, studentId) => {
+      const current = state.attendanceRecords.find((record) => record.studentId === studentId && record.sessionId === sessionId);
+      const status = nextAttendanceState(current?.status ?? '');
       try {
         await invoke<string>('create_attendance_record', { sessionId, studentId, status, note: null });
         await loadAttendanceData(state);
         render();
-      } catch (error) { showToast(`Could not update attendance: ${error instanceof Error ? error.message : String(error)}`); }
-    });
+      } catch (error) {
+        showToast(`Could not update attendance: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+    onToggleHistory: () => {
+      state.showAttendanceHistory = !state.showAttendanceHistory;
+      render();
+    },
   });
 
-  document.querySelector<HTMLButtonElement>('#toggle-attendance-history')?.addEventListener('click', () => { state.showAttendanceHistory = !state.showAttendanceHistory; render(); });
+  document.querySelector<HTMLButtonElement>('#open-llm-setup-wizard')?.addEventListener('click', () => {
+    openLlmSetupWizard();
+  });
+  document.querySelector<HTMLButtonElement>('#llm-setup-close')?.addEventListener('click', () => {
+    closeLlmSetupWizard();
+  });
+  document.querySelector<HTMLButtonElement>('#llm-setup-skip')?.addEventListener('click', () => {
+    closeLlmSetupWizard();
+  });
+  document.querySelector<HTMLElement>('#llm-setup-modal')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeLlmSetupWizard();
+  });
+  document.querySelector<HTMLSelectElement>('#llm-setup-provider')?.addEventListener('change', async (event) => {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    llmSetupProvider = value === 'ollama' ? 'ollama' : 'opencode';
+    await refreshLlmSetupWizardState();
+  });
+  document.querySelector<HTMLButtonElement>('#llm-setup-install-opencode')?.addEventListener('click', async () => {
+    await installSingleGradingTool('opencode', 'OpenCode CLI');
+    await refreshLlmSetupWizardState();
+  });
+  document.querySelector<HTMLButtonElement>('#llm-setup-refresh')?.addEventListener('click', async () => {
+    await refreshLlmSetupWizardState();
+  });
+  document.querySelector<HTMLSelectElement>('#llm-setup-model')?.addEventListener('change', (event) => {
+    llmSetupModel = (event.currentTarget as HTMLSelectElement).value;
+  });
+  document.querySelector<HTMLButtonElement>('#llm-setup-save')?.addEventListener('click', async () => {
+    const model = llmSetupModel || state.llmModels[0]?.id || '';
+    if (!model) { showToast('Select a model first.'); return; }
+    llmSetupBusy = true;
+    render();
+    try {
+      const saved = await invoke<LlmConfig>('set_llm_provider', { provider: llmSetupProvider, model });
+      state.llmConfig = saved ?? state.llmConfig;
+      if (state.llmConfig) {
+        await loadModels(state, state.llmConfig.provider);
+        await refreshGradingDiagnostics();
+      }
+      llmSetupWizardOpen = false;
+      llmSetupBusy = false;
+      showToast('AI setup complete');
+      render();
+    } catch (error) {
+      llmSetupBusy = false;
+      render();
+      showToast(error instanceof Error ? error.message : String(error));
+    }
+  });
 
   document.querySelector<HTMLButtonElement>('#sync-holidays')?.addEventListener('click', async () => {
     const level = selectedLevel(state);
@@ -3581,6 +3436,30 @@ function bindPageEvents() {
       const label = button.dataset.installToolLabel ?? toolKey;
       await installSingleGradingTool(toolKey, label);
     });
+  });
+
+  document.querySelector<HTMLButtonElement>('#export-db-backup')?.addEventListener('click', async () => {
+    if (!state.backend) { showToast('Open the desktop app to export backups'); return; }
+    try {
+      const backup = await invoke<DatabaseBackupResult>('export_database_backup');
+      if (!backup?.path) { showToast('Backup export failed'); return; }
+      lastDatabaseBackupPath = backup.path;
+      render();
+      const mb = (backup.fileSizeBytes / (1024 * 1024)).toFixed(2);
+      showToast(`Backup saved (${mb} MB)`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  document.querySelector<HTMLButtonElement>('#copy-db-backup-path')?.addEventListener('click', async () => {
+    if (!lastDatabaseBackupPath) return;
+    try {
+      await navigator.clipboard.writeText(lastDatabaseBackupPath);
+      showToast('Backup path copied');
+    } catch {
+      showToast(lastDatabaseBackupPath);
+    }
   });
 
   document.querySelector<HTMLInputElement>('#teacher-image')?.addEventListener('change', async (event) => {
@@ -3795,106 +3674,87 @@ function bindPageEvents() {
     render();
   });
 
-  document.querySelector<HTMLFormElement>('#test-create-form')?.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    if (!state.selectedClassId) { showToast('Select a class first'); return; }
-    const title = (document.querySelector<HTMLInputElement>('#test-title')?.value ?? '').trim();
-    const instructions = (document.querySelector<HTMLTextAreaElement>('#test-instructions')?.value ?? '').trim();
-    const rubric = (document.querySelector<HTMLTextAreaElement>('#test-rubric')?.value ?? '').trim();
-    const maxScore = Number(document.querySelector<HTMLInputElement>('#test-max-score')?.value ?? 100);
-    if (!title || !instructions) { showToast('Enter a test title and instructions'); return; }
-    try {
-      const id = await invoke<string>('create_test', { classId: state.selectedClassId, title, instructions, scoringRubric: rubric, maxScore });
-      if (id) { state.currentTestId = id; state.tests = (await invoke<TestTemplate[]>('get_class_tests', { classId: state.selectedClassId })) ?? []; state.testSubmissions = (await invoke<StudentSubmission[]>('get_test_submissions', { assessmentId: id })) ?? []; showToast('Test created'); render(); }
-    } catch (error) { showToast(String(error)); }
-  });
-
-  document.querySelector<HTMLButtonElement>('#test-generate-syllabus')?.addEventListener('click', async () => {
-    if (!state.selectedClassId) { showToast('Select a class first'); return; }
-    const sections = collectSyllabusSectionsForTestDraft();
-    if (sections.length === 0) {
-      showToast('No syllabus sections loaded. Go to Syllabus page, upload/review sections, then try again.');
-      return;
-    }
-    const selectedSections = await openTestSyllabusSectionPickerModal(sections);
-    if (!selectedSections) return;
-    if (selectedSections.length === 0) {
-      showToast('Select at least one syllabus section.');
-      return;
-    }
-    try {
-      const draft = await invoke<TestDraft>('create_test_based_on_syllabus', {
-        classId: state.selectedClassId,
-        selectedSections,
-      });
-      if (!draft) return;
-      const titleInput = document.querySelector<HTMLInputElement>('#test-title');
-      const instructionsInput = document.querySelector<HTMLTextAreaElement>('#test-instructions');
-      const rubricInput = document.querySelector<HTMLTextAreaElement>('#test-rubric');
-      const maxScoreInput = document.querySelector<HTMLInputElement>('#test-max-score');
-      if (titleInput) titleInput.value = draft.title;
-      if (instructionsInput) instructionsInput.value = draft.instructions;
-      if (rubricInput) rubricInput.value = draft.scoringRubric;
-      if (maxScoreInput) maxScoreInput.value = String(Math.round(draft.maxScore));
-      showToast('Syllabus-based test draft ready. Review and click Create test.');
-    } catch (error) { showToast(String(error)); }
-  });
-
-  document.querySelectorAll<HTMLElement>('[data-select-test]').forEach((el) => {
-    el.addEventListener('click', async () => {
-      const id = el.dataset.selectTest ?? '';
-      if (!id) return;
+  bindTestsPageEvents({
+    onCreateTest: async ({ title, instructions, rubric, maxScore }) => {
+      if (!state.selectedClassId) { showToast('Select a class first'); return; }
+      if (!title || !instructions) { showToast('Enter a test title and instructions'); return; }
+      try {
+        const id = await invoke<string>('create_test', { classId: state.selectedClassId, title, instructions, scoringRubric: rubric, maxScore });
+        if (id) {
+          state.currentTestId = id;
+          state.tests = (await invoke<TestTemplate[]>('get_class_tests', { classId: state.selectedClassId })) ?? [];
+          state.testSubmissions = (await invoke<StudentSubmission[]>('get_test_submissions', { assessmentId: id })) ?? [];
+          showToast('Test created');
+          render();
+        }
+      } catch (error) { showToast(String(error)); }
+    },
+    onGenerateFromSyllabus: async () => {
+      if (!state.selectedClassId) { showToast('Select a class first'); return; }
+      const sections = collectSyllabusSectionsForTestDraft();
+      if (sections.length === 0) {
+        showToast('No syllabus sections loaded. Go to Syllabus page, upload/review sections, then try again.');
+        return;
+      }
+      const selectedSections = await openTestSyllabusSectionPickerModal(sections);
+      if (!selectedSections) return;
+      if (selectedSections.length === 0) {
+        showToast('Select at least one syllabus section.');
+        return;
+      }
+      try {
+        const draft = await invoke<TestDraft>('create_test_based_on_syllabus', {
+          classId: state.selectedClassId,
+          selectedSections,
+        });
+        if (!draft) return;
+        const titleInput = document.querySelector<HTMLInputElement>('#test-title');
+        const instructionsInput = document.querySelector<HTMLTextAreaElement>('#test-instructions');
+        const rubricInput = document.querySelector<HTMLTextAreaElement>('#test-rubric');
+        const maxScoreInput = document.querySelector<HTMLInputElement>('#test-max-score');
+        if (titleInput) titleInput.value = draft.title;
+        if (instructionsInput) instructionsInput.value = draft.instructions;
+        if (rubricInput) rubricInput.value = draft.scoringRubric;
+        if (maxScoreInput) maxScoreInput.value = String(Math.round(draft.maxScore));
+        showToast('Syllabus-based test draft ready. Review and click Create test.');
+      } catch (error) { showToast(String(error)); }
+    },
+    onSelectTest: async (id) => {
       state.currentTestId = id;
       state.testSubmissions = (await invoke<StudentSubmission[]>('get_test_submissions', { assessmentId: id })) ?? [];
       render();
-    });
-  });
-
-  document.querySelector<HTMLButtonElement>('#auto-score-test')?.addEventListener('click', async () => {
-    if (!state.currentTestId) return;
-    try {
-      const results = await invoke<StudentSubmission[]>('auto_score_submissions', { assessmentId: state.currentTestId });
-      if (results) state.testSubmissions = results;
-      showToast('Auto-scoring complete â€” review and adjust scores as needed');
-      render();
-    } catch (error) { showToast(String(error)); }
-  });
-
-  document.querySelector<HTMLButtonElement>('#export-test-results')?.addEventListener('click', () => {
-    if (!state.currentTestId || state.testSubmissions.length === 0) return;
-    const test = state.tests.find((t) => t.id === state.currentTestId);
-    let csv = 'Student,Score,Label,Feedback,File\n';
-    for (const sub of state.testSubmissions) {
-      csv += `"${sub.studentName}",${sub.scoreValue ?? ''},"${sub.scoreLabel ?? ''}","${(sub.teacherComment ?? '').replace(/"/g, '""')}","${sub.fileName ?? ''}"\n`;
-    }
-    downloadTextFile(`${test?.title ?? 'test'}-results.csv`, csv, 'text/csv');
-    showToast('Results exported');
-  });
-
-  document.querySelectorAll<HTMLButtonElement>('[data-save-score]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const studentId = btn.dataset.saveScore ?? '';
-      if (!studentId || !state.currentTestId) return;
-      const scoreInput = document.querySelector<HTMLInputElement>(`[data-score-student="${studentId}"]`);
-      const commentInput = document.querySelector<HTMLTextAreaElement>(`[data-comment-student="${studentId}"]`);
-      const score = scoreInput ? parseFloat(scoreInput.value) : undefined;
-      const comment = commentInput?.value?.trim() || null;
-      if (score === undefined || isNaN(score)) { showToast('Enter a valid score'); return; }
+    },
+    onAutoScore: async () => {
+      if (!state.currentTestId) return;
       try {
-        await invoke('score_submission', { assessmentId: state.currentTestId, studentId, score, label: null, comment });
+        const results = await invoke<StudentSubmission[]>('auto_score_submissions', { assessmentId: state.currentTestId });
+        if (results) state.testSubmissions = results;
+        showToast('Auto-scoring complete - review and adjust scores as needed');
+        render();
+      } catch (error) { showToast(String(error)); }
+    },
+    onExportResults: () => {
+      if (!state.currentTestId || state.testSubmissions.length === 0) return;
+      const test = state.tests.find((entry) => entry.id === state.currentTestId);
+      let csv = 'Student,Score,Label,Feedback,File\n';
+      for (const submission of state.testSubmissions) {
+        csv += `"${submission.studentName}",${submission.scoreValue ?? ''},"${submission.scoreLabel ?? ''}","${(submission.teacherComment ?? '').replace(/"/g, '""')}","${submission.fileName ?? ''}"\n`;
+      }
+      downloadTextFile(`${test?.title ?? 'test'}-results.csv`, csv, 'text/csv');
+      showToast('Results exported');
+    },
+    onSaveScore: async ({ studentId, scoreValue, comment }) => {
+      if (!studentId || !state.currentTestId) return;
+      if (scoreValue === undefined || isNaN(scoreValue)) { showToast('Enter a valid score'); return; }
+      try {
+        await invoke('score_submission', { assessmentId: state.currentTestId, studentId, score: scoreValue, label: null, comment });
         showToast('Score saved');
         state.testSubmissions = (await invoke<StudentSubmission[]>('get_test_submissions', { assessmentId: state.currentTestId })) ?? [];
         render();
       } catch (error) { showToast(String(error)); }
-    });
-  });
-
-  document.querySelectorAll<HTMLInputElement>('[data-upload-student]').forEach((input) => {
-    input.addEventListener('change', async (event) => {
-      const fileInput = event.currentTarget as HTMLInputElement;
-      const studentId = fileInput.dataset.uploadStudent ?? '';
-      const file = fileInput.files?.[0];
-      if (!file || !studentId || !state.currentTestId) return;
+    },
+    onUploadStudentFile: async (studentId, file) => {
+      if (!studentId || !state.currentTestId) return;
       try {
         const buffer = await file.arrayBuffer();
         const fileData = Array.from(new Uint8Array(buffer));
@@ -3903,56 +3763,204 @@ function bindPageEvents() {
         state.testSubmissions = (await invoke<StudentSubmission[]>('get_test_submissions', { assessmentId: state.currentTestId })) ?? [];
         render();
       } catch (error) { showToast(String(error)); }
-    });
+    },
+    onViewFile: () => {
+      showToast('File preview coming soon - files are saved to the local data directory');
+    },
   });
 
-  document.querySelectorAll<HTMLInputElement>('[data-upload-matrix]').forEach((input) => {
-    input.addEventListener('change', async (event) => {
-      const fileInput = event.currentTarget as HTMLInputElement;
-      const assessmentId = fileInput.dataset.matrixAssessment ?? '';
-      const studentId = fileInput.dataset.matrixStudent ?? '';
-      const file = fileInput.files?.[0];
-      if (!assessmentId || !studentId || !file) return;
+  bindClassroomMatrixUploadEvents({
+    onUploadMatrix: async (assessmentId, studentId, file) => {
       try {
         const buffer = await file.arrayBuffer();
         const fileData = Array.from(new Uint8Array(buffer));
         await invoke('upload_submission_file', { assessmentId, studentId, fileName: file.name, fileData, mimeType: file.type });
+        const statusKey = matrixStatusKey(assessmentId, studentId);
+        state.classroomMatrixStatus[statusKey] = 'uploaded';
+        delete state.classroomMatrixLastGradedAt[statusKey];
         const refreshed = (await invoke<StudentSubmission[]>('get_test_submissions', { assessmentId })) ?? [];
         state.classroomTestSubmissions[assessmentId] = refreshed;
         if (state.currentTestId === assessmentId) state.testSubmissions = refreshed;
         showToast(`Uploaded ${file.name}`);
         render();
-      } catch (error) { showToast(String(error)); }
-    });
+      } catch (error) {
+        showToast(String(error));
+      }
+    },
+    onUploadMatrixLink: async (assessmentId, studentId, url) => {
+      try {
+        await invoke('upload_submission_link', { assessmentId, studentId, fileUrl: url });
+        const statusKey = matrixStatusKey(assessmentId, studentId);
+        state.classroomMatrixStatus[statusKey] = 'uploaded';
+        delete state.classroomMatrixLastGradedAt[statusKey];
+        const refreshed = (await invoke<StudentSubmission[]>('get_test_submissions', { assessmentId })) ?? [];
+        state.classroomTestSubmissions[assessmentId] = refreshed;
+        if (state.currentTestId === assessmentId) state.testSubmissions = refreshed;
+        showToast('Linked file downloaded and stored');
+        render();
+      } catch (error) {
+        showToast(String(error));
+      }
+    },
+    onGradeAllMatrix: async (onlyUngraded) => {
+      const targets: Array<{ assessmentId: string; studentId: string }> = [];
+      for (const test of state.tests) {
+        const rows = state.classroomTestSubmissions[test.id] ?? [];
+        for (const row of rows) {
+          if (!row.fileName) continue;
+          if (onlyUngraded && row.scoreValue != null) continue;
+          targets.push({ assessmentId: test.id, studentId: row.studentId });
+        }
+      }
+      if (targets.length === 0) {
+        showToast(onlyUngraded ? 'No ungraded submitted tests found' : 'No submitted tests found to grade');
+        return;
+      }
+
+      state.classroomMatrixGradeAllBusy = true;
+      render();
+
+      let ok = 0;
+      let failed = 0;
+      for (const target of targets) {
+        const statusKey = matrixStatusKey(target.assessmentId, target.studentId);
+        state.classroomMatrixStatus[statusKey] = 'grading';
+        render();
+        try {
+          await invoke<StudentSubmission>('auto_score_single_submission', {
+            assessmentId: target.assessmentId,
+            studentId: target.studentId,
+          });
+          state.classroomMatrixStatus[statusKey] = 'graded';
+          state.classroomMatrixLastGradedAt[statusKey] = new Date().toLocaleString();
+          ok++;
+        } catch {
+          state.classroomMatrixStatus[statusKey] = 'failed';
+          failed++;
+        }
+      }
+
+      for (const test of state.tests) {
+        const refreshed = (await invoke<StudentSubmission[]>('get_test_submissions', { assessmentId: test.id })) ?? [];
+        state.classroomTestSubmissions[test.id] = refreshed;
+        if (state.currentTestId === test.id) state.testSubmissions = refreshed;
+      }
+      state.classroomMatrixGradeAllBusy = false;
+      showToast(`${onlyUngraded ? 'Grade ungraded' : 'Grade all'} finished: ${ok} graded, ${failed} failed`);
+      render();
+    },
+    onGradeFailedMatrix: async () => {
+      const failedTargets: Array<{ assessmentId: string; studentId: string }> = [];
+      for (const [key, status] of Object.entries(state.classroomMatrixStatus)) {
+        if (status !== 'failed') continue;
+        const [assessmentId, studentId] = key.split(':');
+        if (!assessmentId || !studentId) continue;
+        failedTargets.push({ assessmentId, studentId });
+      }
+      if (failedTargets.length === 0) {
+        showToast('No failed grading cells to retry');
+        return;
+      }
+      state.classroomMatrixGradeAllBusy = true;
+      render();
+      let ok = 0;
+      let failed = 0;
+      for (const target of failedTargets) {
+        const statusKey = matrixStatusKey(target.assessmentId, target.studentId);
+        state.classroomMatrixStatus[statusKey] = 'grading';
+        render();
+        try {
+          await invoke<StudentSubmission>('auto_score_single_submission', {
+            assessmentId: target.assessmentId,
+            studentId: target.studentId,
+          });
+          state.classroomMatrixStatus[statusKey] = 'graded';
+          state.classroomMatrixLastGradedAt[statusKey] = new Date().toLocaleString();
+          ok++;
+        } catch {
+          state.classroomMatrixStatus[statusKey] = 'failed';
+          failed++;
+        }
+      }
+      for (const test of state.tests) {
+        const refreshed = (await invoke<StudentSubmission[]>('get_test_submissions', { assessmentId: test.id })) ?? [];
+        state.classroomTestSubmissions[test.id] = refreshed;
+        if (state.currentTestId === test.id) state.testSubmissions = refreshed;
+      }
+      state.classroomMatrixGradeAllBusy = false;
+      showToast(`Retry failed finished: ${ok} graded, ${failed} failed`);
+      render();
+    },
+    onToggleMatrixDensity: () => {
+      state.classroomMatrixCompactMode = !state.classroomMatrixCompactMode;
+      render();
+    },
+    onGradeMatrix: async (assessmentId, studentId) => {
+      const statusKey = matrixStatusKey(assessmentId, studentId);
+      state.classroomMatrixStatus[statusKey] = 'grading';
+      render();
+      try {
+        await invoke<StudentSubmission>('auto_score_single_submission', { assessmentId, studentId });
+        const refreshed = (await invoke<StudentSubmission[]>('get_test_submissions', { assessmentId })) ?? [];
+        state.classroomTestSubmissions[assessmentId] = refreshed;
+        state.classroomMatrixStatus[statusKey] = 'graded';
+        state.classroomMatrixLastGradedAt[statusKey] = new Date().toLocaleString();
+        if (state.currentTestId === assessmentId) state.testSubmissions = refreshed;
+        showToast('Submission graded');
+        render();
+      } catch (error) {
+        state.classroomMatrixStatus[statusKey] = 'failed';
+        showToast(String(error));
+        render();
+      }
+    },
   });
-
-  document.querySelectorAll<HTMLButtonElement>('[data-view-file]').forEach((btn) => {
-    btn.addEventListener('click', () => { showToast('File preview coming soon â€” files are saved to the local data directory'); });
-  });
-
-  document.querySelector<HTMLInputElement>('#report-instructions')?.addEventListener('input', (e) => { state.reportInstructions = (e.currentTarget as HTMLInputElement).value; });
-  document.querySelector<HTMLInputElement>('#report-word-count')?.addEventListener('change', (e) => { state.reportWordCount = Number((e.currentTarget as HTMLInputElement).value) || 300; });
-
-  document.querySelector<HTMLButtonElement>('#generate-all-reports')?.addEventListener('click', async () => {
-    if (!state.selectedClassId || state.students.length === 0) return;
-    const btn = document.querySelector<HTMLButtonElement>('#generate-all-reports');
-    if (btn) { btn.disabled = true; btn.textContent = 'Generating...'; }
-    let success = 0;
-    let failed = 0;
-    for (const student of state.students) {
-      try { await invoke<string>('generate_student_report_v2', { studentId: student.id, classId: state.selectedClassId, teacherInstructions: state.reportInstructions.trim() || null, wordCountTarget: state.reportWordCount }); success++; }
-      catch { failed++; }
-    }
-    state.reportStatuses = (await invoke<StudentReportStatus[]>('get_class_report_status', { classId: state.selectedClassId })) ?? [];
-    if (btn) { btn.disabled = false; btn.innerHTML = "${icon('book')} Generate reports for all students"; }
-    showToast(`Reports generated: ${success} success${success === 1 ? '' : 'es'}, ${failed} failed`);
-    render();
-  });
-
-  document.querySelectorAll<HTMLButtonElement>('[data-view-report]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const reportId = btn.dataset.viewReport ?? '';
-      if (!reportId) return;
+  bindReportsPageEvents({
+    onSelectClass: async (classId) => {
+      if (classId === state.selectedClassId) return;
+      state.selectedClassId = classId;
+      await loadClassData(state);
+      render();
+    },
+    onInstructionsInput: (value) => {
+      state.reportInstructions = value;
+    },
+    onWordCountChange: (value) => {
+      state.reportWordCount = value;
+    },
+    onGenerateAllReports: async () => {
+      if (!state.selectedClassId || state.students.length === 0) return;
+      const btn = document.querySelector<HTMLButtonElement>('#generate-all-reports');
+      if (btn) { btn.disabled = true; btn.textContent = 'Generating...'; }
+      let success = 0;
+      let failed = 0;
+      for (const student of state.students) {
+        try { await invoke<string>('generate_student_report_v2', { studentId: student.id, classId: state.selectedClassId, teacherInstructions: state.reportInstructions.trim() || null, wordCountTarget: state.reportWordCount }); success++; }
+        catch { failed++; }
+      }
+      state.reportStatuses = (await invoke<StudentReportStatus[]>('get_class_report_status', { classId: state.selectedClassId })) ?? [];
+      if (btn) { btn.disabled = false; btn.innerHTML = `${icon('book')} Generate reports for all students`; }
+      showToast(`Reports generated: ${success} success${success === 1 ? '' : 'es'}, ${failed} failed`);
+      render();
+    },
+    onGenerateStudentReport: async (studentId) => {
+      if (!state.selectedClassId || !studentId) return;
+      try {
+        await invoke<string>('generate_student_report_v2', {
+          studentId,
+          classId: state.selectedClassId,
+          teacherInstructions: state.reportInstructions.trim() || null,
+          wordCountTarget: state.reportWordCount,
+        });
+        state.reportStatuses = (await invoke<StudentReportStatus[]>('get_class_report_status', { classId: state.selectedClassId })) ?? [];
+        const student = state.students.find((entry) => entry.id === studentId);
+        showToast(`Report generated for ${student?.fullName ?? 'student'}`);
+        render();
+      } catch (error) {
+        showToast(String(error));
+      }
+    },
+    onViewReport: async (reportId) => {
       try {
         const report = await invoke<StudentReportView>('get_student_report', { reportId });
         if (!report) { showToast('Report not found'); return; }
@@ -3963,13 +3971,8 @@ function bindPageEvents() {
         window.open(reportUrl, '_blank');
         setTimeout(() => URL.revokeObjectURL(reportUrl), 30000);
       } catch (error) { showToast(String(error)); }
-    });
-  });
-
-  document.querySelectorAll<HTMLButtonElement>('[data-export-report]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const reportId = btn.dataset.exportReport ?? '';
-      if (!reportId) { showToast('Report not found'); return; }
+    },
+    onExportReport: async (reportId) => {
       try {
         const report = await invoke<StudentReportView>('get_student_report', { reportId });
         if (!report) { showToast('Report not found'); return; }
@@ -3977,7 +3980,7 @@ function bindPageEvents() {
         downloadTextFile(`report-${reportId.slice(0, 8)}.txt`, txt, 'text/plain');
         showToast('Report exported');
       } catch (error) { showToast(String(error)); }
-    });
+    },
   });
 
   document.querySelector<HTMLSelectElement>('#clear-school-select')?.addEventListener('change', () => {
@@ -3990,6 +3993,31 @@ function bindPageEvents() {
     if (!schoolId) return;
     const school = state.schools.find((s) => s.id === schoolId);
     if (!school) return;
+    if (!lastDatabaseBackupPath && state.backend) {
+      const createBackupNow = await openConfirmModal({
+        id: 'confirm-backup-before-delete',
+        title: 'Create backup before deleting data?',
+        message: 'No backup has been exported in this session. Create a full SQLite backup first so this data can be recovered later.',
+        confirmLabel: 'Export backup now',
+        cancelLabel: 'Skip backup',
+      });
+      if (createBackupNow) {
+        try {
+          const backup = await invoke<DatabaseBackupResult>('export_database_backup');
+          if (!backup?.path) {
+            showToast('Backup export failed; data delete cancelled');
+            return;
+          }
+          lastDatabaseBackupPath = backup.path;
+          render();
+          showToast('Backup exported. Continue when ready.');
+          return;
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : String(error));
+          return;
+        }
+      }
+    }
     const dangerConfirm = await openConfirmModal({
       id: 'confirm-delete-school-data',
       title: `Delete all data for ${school.name}?`,

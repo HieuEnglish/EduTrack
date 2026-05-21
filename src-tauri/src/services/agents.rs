@@ -66,26 +66,61 @@ pub async fn run_class_agents(
         let enabled = enabled_agents(conn, &class_id)?;
         let mut insights = Vec::new();
         if enabled.iter().any(|agent| agent == "attendance") {
-            insights.extend(attendance_insights(conn, &class_id)?);
+            append_agent_insights(
+                &mut insights,
+                "attendance",
+                &class_id,
+                attendance_insights(conn, &class_id),
+            );
         }
         if enabled.iter().any(|agent| agent == "planning") {
-            insights.extend(planning_insights(conn, &class_id)?);
+            append_agent_insights(
+                &mut insights,
+                "planning",
+                &class_id,
+                planning_insights(conn, &class_id),
+            );
         }
 
         if enabled.iter().any(|agent| agent == "performance") {
-            insights.extend(performance_insights(conn, &class_id)?);
+            append_agent_insights(
+                &mut insights,
+                "performance",
+                &class_id,
+                performance_insights(conn, &class_id),
+            );
         }
         if enabled.iter().any(|agent| agent == "assignments") {
-            insights.extend(assignments_insights(conn, &class_id)?);
+            append_agent_insights(
+                &mut insights,
+                "assignments",
+                &class_id,
+                assignments_insights(conn, &class_id),
+            );
         }
         if enabled.iter().any(|agent| agent == "engagement") {
-            insights.extend(engagement_insights(conn, &class_id)?);
+            append_agent_insights(
+                &mut insights,
+                "engagement",
+                &class_id,
+                engagement_insights(conn, &class_id),
+            );
         }
         if enabled.iter().any(|agent| agent == "reports") {
-            insights.extend(report_writer_insights(conn, &class_id)?);
+            append_agent_insights(
+                &mut insights,
+                "reports",
+                &class_id,
+                report_writer_insights(conn, &class_id),
+            );
         }
         if enabled.iter().any(|agent| agent == "syllabus") {
-            insights.extend(syllabus_extraction_insights(conn, &class_id)?);
+            append_agent_insights(
+                &mut insights,
+                "syllabus",
+                &class_id,
+                syllabus_extraction_insights(conn, &class_id),
+            );
         }
         conn.execute(
             "DELETE FROM agent_insights WHERE class_id = ?1",
@@ -112,6 +147,46 @@ pub async fn run_class_agents(
         }
         Ok(insights)
     })
+}
+
+fn append_agent_insights(
+    insights: &mut Vec<AgentInsight>,
+    agent_type: &str,
+    class_id: &str,
+    result: Result<Vec<AgentInsight>, String>,
+) {
+    match result {
+        Ok(rows) => insights.extend(rows),
+        Err(error) => insights.push(AgentInsight {
+            id: new_id("insight"),
+            class_id: class_id.to_string(),
+            student_id: None,
+            agent_type: agent_type.to_string(),
+            severity: "warning".to_string(),
+            title: format!("{agent_type} agent failed"),
+            body: format!(
+                "The {agent_type} agent could not complete this run: {}",
+                truncate_agent_error(&error)
+            ),
+            source_event_type: Some("agent_runtime".to_string()),
+            created_at: now(),
+        }),
+    }
+}
+
+fn truncate_agent_error(error: &str) -> String {
+    let cleaned = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.chars().count() <= 180 {
+        return cleaned;
+    }
+    let mut truncated = String::new();
+    for (index, ch) in cleaned.chars().enumerate() {
+        if index >= 179 {
+            break;
+        }
+        truncated.push(ch);
+    }
+    format!("{truncated}...")
 }
 
 fn enabled_agents(conn: &rusqlite::Connection, class_id: &str) -> Result<Vec<String>, String> {

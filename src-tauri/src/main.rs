@@ -33,6 +33,8 @@ fn main() {
             services::attendance::get_sessions_by_class,
             services::attendance::update_session_completion,
             services::exports::export_school_data_json,
+            services::exports::export_database_backup,
+            services::exports::run_weekly_backup_if_due,
             services::exports::export_student_report_txt,
             services::exports::export_year_plan_csv,
             services::hierarchy::create_class,
@@ -88,6 +90,7 @@ fn main() {
             services::syllabus_processing::update_syllabus_review,
             services::syllabus_processing::upload_syllabus,
             services::tests::auto_score_submissions,
+            services::tests::auto_score_single_submission,
             services::tests::create_test_based_on_syllabus,
             services::tests::create_test,
             services::tests::get_grading_diagnostics,
@@ -95,7 +98,8 @@ fn main() {
             services::tests::get_class_tests,
             services::tests::get_test_submissions,
             services::tests::score_submission,
-            services::tests::upload_submission_file
+            services::tests::upload_submission_file,
+            services::tests::upload_submission_link
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

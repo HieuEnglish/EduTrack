@@ -1,5 +1,5 @@
 use crate::services::hierarchy::{new_id, now, DbState};
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -157,16 +157,7 @@ pub async fn create_attendance_record(
     note: Option<String>,
 ) -> Result<String, String> {
     state.with_conn(|conn| {
-        let id = new_id("attendance");
-        let timestamp = now();
-        conn.execute(
-            "INSERT INTO attendance_records (id, session_id, student_id, status, note, recorded_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(session_id, student_id) DO UPDATE SET status = excluded.status, note = excluded.note, updated_at = excluded.updated_at",
-            params![id, session_id, student_id, status, note, timestamp, timestamp],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(id)
+        upsert_attendance_record(conn, &session_id, &student_id, &status, note.as_deref())
     })
 }
 
@@ -211,11 +202,149 @@ pub async fn update_session_completion(
     completed: bool,
 ) -> Result<(), String> {
     state.with_conn(|conn| {
-        conn.execute(
-            "UPDATE sessions SET completed = ?1, updated_at = ?2 WHERE id = ?3",
-            params![completed, now(), session_id],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
+        set_session_completion(conn, &session_id, completed)
     })
+}
+
+fn upsert_attendance_record(
+    conn: &Connection,
+    session_id: &str,
+    student_id: &str,
+    status: &str,
+    note: Option<&str>,
+) -> Result<String, String> {
+    let id = new_id("attendance");
+    let timestamp = now();
+    conn.execute(
+        "INSERT INTO attendance_records (id, session_id, student_id, status, note, recorded_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(session_id, student_id) DO UPDATE SET status = excluded.status, note = excluded.note, updated_at = excluded.updated_at",
+        params![id, session_id, student_id, status, note, timestamp, timestamp],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+fn set_session_completion(
+    conn: &Connection,
+    session_id: &str,
+    completed: bool,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE sessions SET completed = ?1, updated_at = ?2 WHERE id = ?3",
+        params![completed, now(), session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                class_id TEXT NOT NULL,
+                year_plan_lesson_id TEXT,
+                session_date TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                topic_tags_json TEXT NOT NULL DEFAULT '[]',
+                completed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE students (
+                id TEXT PRIMARY KEY,
+                full_name TEXT NOT NULL,
+                archived_at TEXT
+            );
+            CREATE TABLE attendance_records (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                student_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                note TEXT,
+                recorded_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(session_id, student_id)
+            );",
+        )
+        .expect("schema");
+        conn
+    }
+
+    #[test]
+    fn upsert_attendance_updates_existing_row() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO sessions (id, class_id, session_date, title, topic_tags_json, completed, created_at, updated_at)
+             VALUES ('session-1', 'class-1', '2026-05-20', 'Lesson 1', '[]', 0, 't', 't')",
+            [],
+        )
+        .expect("insert session");
+        conn.execute(
+            "INSERT INTO students (id, full_name, archived_at) VALUES ('student-1', 'A', NULL)",
+            [],
+        )
+        .expect("insert student");
+
+        let first_id = upsert_attendance_record(
+            &conn,
+            "session-1",
+            "student-1",
+            "present",
+            Some("on time"),
+        )
+        .expect("first upsert");
+        let second_id = upsert_attendance_record(
+            &conn,
+            "session-1",
+            "student-1",
+            "absent",
+            Some("sick"),
+        )
+        .expect("second upsert");
+
+        assert_ne!(first_id, second_id, "upsert generates fresh ids per call");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM attendance_records", [], |row| row.get(0))
+            .expect("count rows");
+        assert_eq!(count, 1, "should keep a single row per (session, student)");
+
+        let (status, note): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, note FROM attendance_records WHERE session_id = 'session-1' AND student_id = 'student-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("load updated row");
+        assert_eq!(status, "absent");
+        assert_eq!(note.as_deref(), Some("sick"));
+    }
+
+    #[test]
+    fn set_session_completion_toggles_completed_flag() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO sessions (id, class_id, session_date, title, topic_tags_json, completed, created_at, updated_at)
+             VALUES ('session-2', 'class-1', '2026-05-20', 'Lesson 2', '[]', 0, 't', 't')",
+            [],
+        )
+        .expect("insert session");
+
+        set_session_completion(&conn, "session-2", true).expect("mark completed");
+        let completed: bool = conn
+            .query_row(
+                "SELECT completed FROM sessions WHERE id = 'session-2'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query completed");
+        assert!(completed);
+    }
 }

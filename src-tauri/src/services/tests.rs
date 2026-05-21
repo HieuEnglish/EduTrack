@@ -2,7 +2,8 @@ use crate::services::hierarchy::{get_class, get_level, new_id, now, DbState};
 use crate::services::llm_service::{
     generate_local_report, load_and_probe_llm_config, probe_opencode_cli,
 };
-use rusqlite::{params, OptionalExtension};
+use reqwest::blocking::Client;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -126,34 +127,7 @@ pub async fn create_test(
 ) -> Result<String, String> {
     state.with_conn(|conn| {
         let _class = get_class(conn, &class_id)?;
-        let id = new_id("test");
-        let timestamp = now();
-        conn.execute(
-            "INSERT INTO assessments (id, class_id, title, assessment_date, description, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                id, class_id, title, timestamp.clone(),
-                format!("INSTRUCTIONS:{instructions}\nRUBRIC:{scoring_rubric}\nMAX_SCORE:{max_score}"),
-                timestamp, timestamp
-            ],
-        ).map_err(|e| e.to_string())?;
-
-        let students: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT id FROM students WHERE class_id = ?1 AND archived_at IS NULL")
-                .map_err(|e| e.to_string())?;
-            let rows = stmt.query_map(params![class_id], |row| row.get::<_, String>(0))
-                .map_err(|e| e.to_string())?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
-        };
-        for sid in &students {
-            let score_id = new_id("score");
-            conn.execute(
-                "INSERT INTO assessment_scores (id, assessment_id, student_id, score_value, score_label, teacher_comment, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, NULL, NULL, NULL, ?4, ?4)",
-                params![score_id, id, sid, timestamp],
-            ).map_err(|e| e.to_string())?;
-        }
-        Ok(id)
+        create_test_rows(conn, &class_id, &title, &instructions, &scoring_rubric, max_score)
     })
 }
 
@@ -401,6 +375,58 @@ pub async fn upload_submission_file(
 }
 
 #[tauri::command]
+pub async fn upload_submission_link(
+    state: DbState<'_>,
+    assessment_id: String,
+    student_id: String,
+    file_url: String,
+) -> Result<String, String> {
+    let url = file_url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("Only http/https links are supported".to_string());
+    }
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client.get(url).send().map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Download failed: HTTP {}", response.status()));
+    }
+
+    let mime_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    let mut file_name = url
+        .split('/')
+        .next_back()
+        .map(|part| part.split('?').next().unwrap_or(part))
+        .filter(|part| !part.trim().is_empty())
+        .unwrap_or("submission.bin")
+        .to_string();
+    if file_name.len() > 160 {
+        file_name.truncate(160);
+    }
+
+    let file_data = response.bytes().map_err(|e| e.to_string())?.to_vec();
+
+    upload_submission_file(
+        state,
+        assessment_id,
+        student_id,
+        file_name,
+        file_data,
+        mime_type,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn get_grading_diagnostics(state: DbState<'_>) -> Result<GradingDiagnostics, String> {
     let llm = state.with_conn(|conn| Ok(load_and_probe_llm_config(conn)))?;
     let tools = vec![
@@ -494,13 +520,79 @@ pub async fn score_submission(
     comment: Option<String>,
 ) -> Result<(), String> {
     state.with_conn(|conn| {
-        conn.execute(
-            "UPDATE assessment_scores SET score_value = ?1, score_label = ?2, teacher_comment = ?3, updated_at = ?4
-             WHERE assessment_id = ?5 AND student_id = ?6",
-            params![score, label, comment, now(), assessment_id, student_id],
-        ).map_err(|e| e.to_string())?;
-        Ok(())
+        update_submission_score(
+            conn,
+            &assessment_id,
+            &student_id,
+            score,
+            label.as_deref(),
+            comment.as_deref(),
+        )
     })
+}
+
+fn create_test_rows(
+    conn: &Connection,
+    class_id: &str,
+    title: &str,
+    instructions: &str,
+    scoring_rubric: &str,
+    max_score: f64,
+) -> Result<String, String> {
+    let id = new_id("test");
+    let timestamp = now();
+    conn.execute(
+        "INSERT INTO assessments (id, class_id, title, assessment_date, description, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            id,
+            class_id,
+            title,
+            timestamp.clone(),
+            format!("INSTRUCTIONS:{instructions}\nRUBRIC:{scoring_rubric}\nMAX_SCORE:{max_score}"),
+            timestamp,
+            timestamp
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let students: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM students WHERE class_id = ?1 AND archived_at IS NULL")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![class_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+    for sid in &students {
+        let score_id = new_id("score");
+        conn.execute(
+            "INSERT INTO assessment_scores (id, assessment_id, student_id, score_value, score_label, teacher_comment, created_at, updated_at)
+             VALUES (?1, ?2, ?3, NULL, NULL, NULL, ?4, ?4)",
+            params![score_id, id, sid, timestamp],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(id)
+}
+
+fn update_submission_score(
+    conn: &Connection,
+    assessment_id: &str,
+    student_id: &str,
+    score: f64,
+    label: Option<&str>,
+    comment: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE assessment_scores SET score_value = ?1, score_label = ?2, teacher_comment = ?3, updated_at = ?4
+         WHERE assessment_id = ?5 AND student_id = ?6",
+        params![score, label, comment, now(), assessment_id, student_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -654,6 +746,169 @@ pub async fn auto_score_submissions(
             results.push(row.map_err(|e| e.to_string())?);
         }
         Ok(results)
+    })
+}
+
+#[tauri::command]
+pub async fn auto_score_single_submission(
+    state: DbState<'_>,
+    assessment_id: String,
+    student_id: String,
+) -> Result<StudentSubmission, String> {
+    let (config_provider, config_model, llm_available) = state.with_conn(|conn| {
+        let config = load_and_probe_llm_config(conn);
+        Ok((config.provider, config.model, config.available))
+    })?;
+
+    state.with_conn(|conn| {
+        let rubric: String = conn
+            .query_row(
+                "SELECT COALESCE(description, '') FROM assessments WHERE id = ?1",
+                params![assessment_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        let (instructions, scoring_rubric, max_score) = parse_assessment_payload(&rubric);
+
+        let (score_id, student_name, file_name, mime_type, storage_path): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT as2.id, s.full_name, a.file_name, a.mime_type, a.storage_path
+                 FROM assessment_scores as2
+                 JOIN students s ON as2.student_id = s.id
+                 LEFT JOIN attachments a ON a.owner_type = 'assessment_score' AND a.owner_id = as2.id
+                 WHERE as2.assessment_id = ?1 AND as2.student_id = ?2 AND s.archived_at IS NULL",
+                params![assessment_id, student_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .map_err(|_| "Submission not found for student".to_string())?;
+
+        let llm_config = crate::services::llm_service::LocalModelConfig {
+            provider: config_provider,
+            model: config_model,
+            available: llm_available,
+            detail: String::new(),
+        };
+
+        let fname = file_name.clone().unwrap_or_default();
+        let (auto_score, label, comment) = if let Some(path) = storage_path {
+            match extract_submission_content_for_scoring(&path, mime_type.as_deref()) {
+                Ok(content) if llm_available && !content.text.trim().is_empty() => {
+                    let prompt = format!(
+                        "You are an expert teacher and grader.\n\n\
+                         Assignment instructions:\n{instructions}\n\n\
+                         Scoring rubric:\n{scoring_rubric}\n\n\
+                         Maximum score: {max_score}\n\n\
+                         Student: {student_name}\n\
+                         Submission source: {source}\n\
+                         Submission content:\n---\n{submission}\n---\n\n\
+                         Return ONLY valid JSON with this shape:\n\
+                         {{\n\
+                           \"score\": number,\n\
+                           \"label\": string,\n\
+                           \"summary\": string,\n\
+                           \"whatWentWrong\": string[],\n\
+                           \"improvementSteps\": string[]\n\
+                         }}\n\
+                         Rules:\n\
+                         - score must be between 0 and {max_score}\n\
+                         - label should be one of: Excellent, Good, Developing, Needs Improvement\n\
+                         - summary must be specific and concise\n\
+                         - include at least 2 items in whatWentWrong and improvementSteps when possible.",
+                        source = content.source_note,
+                        submission = content.text.chars().take(22_000).collect::<String>(),
+                    );
+                    match generate_local_report(&llm_config, &prompt) {
+                        Ok(response) => {
+                            if let Some((parsed_score, parsed_label, parsed_feedback)) =
+                                parse_grading_response(&response, max_score)
+                            {
+                                (parsed_score, parsed_label, parsed_feedback)
+                            } else {
+                                let fallback = (max_score * 0.75).round().max(1.0);
+                                (
+                                    fallback,
+                                    "Auto-assessed".to_string(),
+                                    format!(
+                                        "{}\n\nModel response could not be fully parsed. Review and adjust.\nRaw model output:\n{}",
+                                        content.source_note,
+                                        response.trim().chars().take(1200).collect::<String>()
+                                    ),
+                                )
+                            }
+                        }
+                        Err(err) => {
+                            let fallback = (max_score * 0.75).round().max(1.0);
+                            (
+                                fallback,
+                                "Auto-assessed".to_string(),
+                                format!(
+                                    "{}\n\nAuto-scored estimate used because LLM was unavailable ({err}). Review and adjust.",
+                                    content.source_note
+                                ),
+                            )
+                        }
+                    }
+                }
+                Ok(content) => {
+                    let fallback = (max_score * 0.7).round().max(1.0);
+                    (
+                        fallback,
+                        "Needs review".to_string(),
+                        format!(
+                            "{}\n\nContent was extracted, but LLM auto-grading is unavailable. Estimated score set for teacher review.",
+                            content.source_note
+                        ),
+                    )
+                }
+                Err(err) => (
+                    0.0,
+                    "Needs review".to_string(),
+                    format!(
+                        "File '{fname}' could not be auto-processed.\nReason: {err}\nPlease review manually or upload a text/PDF/docx submission."
+                    ),
+                ),
+            }
+        } else {
+            (
+                0.0,
+                "No submission".to_string(),
+                "No file submitted. Score set to 0.".to_string(),
+            )
+        };
+
+        conn.execute(
+            "UPDATE assessment_scores SET score_value = ?1, score_label = ?2, teacher_comment = ?3, updated_at = ?4 WHERE id = ?5",
+            params![auto_score, label, comment, now(), score_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(StudentSubmission {
+            student_id,
+            student_name,
+            assessment_id,
+            score_value: Some(auto_score),
+            score_label: Some(label),
+            teacher_comment: Some(comment),
+            attachment_id: None,
+            file_name,
+            mime_type,
+            status: "scored".to_string(),
+        })
     })
 }
 
@@ -1792,10 +2047,123 @@ fn looks_like_windows_cp1252_help_encoding_issue(detail: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE assessments (
+                id TEXT PRIMARY KEY,
+                class_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                assessment_date TEXT NOT NULL,
+                description TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE students (
+                id TEXT PRIMARY KEY,
+                class_id TEXT NOT NULL,
+                full_name TEXT NOT NULL,
+                archived_at TEXT
+            );
+            CREATE TABLE assessment_scores (
+                id TEXT PRIMARY KEY,
+                assessment_id TEXT NOT NULL,
+                student_id TEXT NOT NULL,
+                score_value REAL,
+                score_label TEXT,
+                teacher_comment TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );",
+        )
+        .expect("schema");
+        conn
+    }
 
     #[test]
     fn new_id_format() {
         let id = new_id("test");
         assert!(id.starts_with("test-"));
+    }
+
+    #[test]
+    fn create_test_rows_seeds_only_active_students() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO students (id, class_id, full_name, archived_at) VALUES ('st-1', 'class-1', 'A', NULL)",
+            [],
+        )
+        .expect("insert active");
+        conn.execute(
+            "INSERT INTO students (id, class_id, full_name, archived_at) VALUES ('st-2', 'class-1', 'B', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert archived");
+
+        let assessment_id = create_test_rows(
+            &conn,
+            "class-1",
+            "Quiz 1",
+            "Solve all items",
+            "Use rubric",
+            100.0,
+        )
+        .expect("create test");
+
+        let description: String = conn
+            .query_row(
+                "SELECT description FROM assessments WHERE id = ?1",
+                params![assessment_id],
+                |row| row.get(0),
+            )
+            .expect("description");
+        assert!(description.contains("INSTRUCTIONS:Solve all items"));
+        assert!(description.contains("RUBRIC:Use rubric"));
+        assert!(description.contains("MAX_SCORE:100"));
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM assessment_scores", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 1, "only active students should get score rows");
+
+        let seeded_student: String = conn
+            .query_row("SELECT student_id FROM assessment_scores", [], |row| row.get(0))
+            .expect("seeded student");
+        assert_eq!(seeded_student, "st-1");
+    }
+
+    #[test]
+    fn update_submission_score_writes_score_label_and_comment() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO assessment_scores (id, assessment_id, student_id, score_value, score_label, teacher_comment, created_at, updated_at)
+             VALUES ('score-1', 'test-1', 'st-1', NULL, NULL, NULL, 't', 't')",
+            [],
+        )
+        .expect("insert score row");
+
+        update_submission_score(
+            &conn,
+            "test-1",
+            "st-1",
+            87.5,
+            Some("Good"),
+            Some("Strong reasoning"),
+        )
+        .expect("update score");
+
+        let (score, label, comment): (f64, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT score_value, score_label, teacher_comment FROM assessment_scores WHERE id = 'score-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("query updated score");
+
+        assert!((score - 87.5).abs() < f64::EPSILON);
+        assert_eq!(label.as_deref(), Some("Good"));
+        assert_eq!(comment.as_deref(), Some("Strong reasoning"));
     }
 }

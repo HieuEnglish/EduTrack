@@ -10,12 +10,18 @@
 
 ## 🚀 TL;DR (Fast Start)
 
+### For teachers (recommended)
+
+Install from a release installer (`.msi` or `.exe`). No Rust/Node setup is required.
+
+### For developers
+
 ```powershell
 # From repo root
 .\run.bat
 ```
 
-That launches EduTrack in desktop mode with an AVG-safer Rust build path.
+That launches EduTrack in desktop mode with a stable Rust build path.
 
 ---
 
@@ -72,6 +78,18 @@ When a class is selected, these agents run automatically:
 
 ---
 
+## 🗄️ Data & Migrations
+
+EduTrack stores data in local SQLite and applies versioned schema migrations on startup.
+
+- Fresh install: full schema from `src-tauri/src/db/schema.sql`
+- Existing install: unapplied migrations run in order and are tracked in `schema_migrations`
+- Migration guide: `src-tauri/src/db/MIGRATIONS.md`
+
+This prevents schema changes from breaking existing teacher databases during updates.
+
+---
+
 ## 📦 Project Structure
 
 ```text
@@ -95,7 +113,26 @@ EduTrack/
 
 ---
 
-## ✅ Prerequisites
+## 🧑‍🏫 Install For Teachers (No CLI)
+
+If you are sharing EduTrack with teachers, distribute installer artifacts from GitHub Releases.
+
+1. Download the latest installer asset:
+- `EduTrack_<version>_x64-setup.exe` (NSIS), or
+- `EduTrack_<version>_x64_en-US.msi` (MSI)
+2. Run the installer and follow the setup wizard.
+3. Launch EduTrack from Start Menu.
+4. Allow local firewall prompts if Windows asks.
+
+Notes:
+- Teachers do not need `Node.js`, `Rust`, or `cargo`.
+- Teacher data stays local in the Tauri app data directory.
+- Shareable handout: [TEACHER_INSTALL_GUIDE.md](TEACHER_INSTALL_GUIDE.md)
+- Maintainers: sign Windows installers before sharing. See [RELEASE_SIGNING_WINDOWS.md](RELEASE_SIGNING_WINDOWS.md).
+
+---
+
+## ✅ Prerequisites (Developers)
 
 Install these first:
 
@@ -123,7 +160,7 @@ EduTrack now auto-checks these on startup and will attempt to install missing to
 
 On first run (or when tools are missing), EduTrack will auto-install grading dependencies in the background.
 
-### 2) Doctor mode (if antivirus/file locks happen)
+### 2) Doctor mode (if file locks happen)
 
 ```powershell
 .\run.bat -Doctor
@@ -150,31 +187,48 @@ cargo tauri dev --no-watch
 
 ---
 
-## 🛡️ AVG-Friendly Notes (Windows)
+## 🛡️ Windows Dev Build Notes
+
+This section is for local developer builds only.
 
 EduTrack’s launcher uses a stable Cargo target path:
 
 ```text
-D:\EduTrack\.dev-cache\cargo-target
+<repo>\.dev-cache\cargo-target
 ```
 
-If AVG blocks builds/executables, add exceptions for:
+If build artifacts are locked by another process, check these common locations:
 
-- `D:\EduTrack`
-- `D:\EduTrack\.dev-cache`
-- `D:\EduTrack\.dev-cache\cargo-target`
-- `D:\EduTrack\src-tauri`
-- `D:\EduTrack\frontend\node_modules`
-- `D:\EduTrack\.dev-cache\cargo-target\debug\tauri-app.exe`
+- `<repo>`
+- `<repo>\.dev-cache`
+- `<repo>\.dev-cache\cargo-target`
+- `<repo>\src-tauri`
+- `<repo>\frontend\node_modules`
+- `<repo>\.dev-cache\cargo-target\debug\tauri-app.exe`
 
 ---
 
-## 🏗️ Production Build
+## 🏗️ Build Installers (Maintainers)
 
 ```bash
 cd src-tauri
-cargo tauri build
+cargo tauri build --bundles msi,nsis
 ```
+
+Typical artifact locations:
+
+- `src-tauri/target/release/bundle/msi/`
+- `src-tauri/target/release/bundle/nsis/`
+
+Recommended release flow:
+
+1. Build installers on a clean Windows machine.
+2. Sign installers with your code-signing certificate.
+3. Smoke-test install and uninstall once.
+4. Upload signed `.msi` and/or `.exe` assets to GitHub Releases.
+5. Share the release download link with teachers (not source checkout instructions).
+
+Signing details: [RELEASE_SIGNING_WINDOWS.md](RELEASE_SIGNING_WINDOWS.md)
 
 ---
 

@@ -36,7 +36,7 @@ impl Database {
                 .map_err(|e| e.to_string())?;
         }
 
-        add_missing_columns(&conn)?;
+        apply_schema_migrations(&conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -64,217 +64,247 @@ impl Database {
     }
 }
 
-fn add_missing_columns(conn: &Connection) -> Result<(), String> {
+type MigrationFn = fn(&Connection) -> Result<(), String>;
+
+struct Migration {
+    version: &'static str,
+    apply: MigrationFn,
+}
+
+const MIGRATIONS: [Migration; 5] = [
+    Migration {
+        version: "001_add_student_age_gender",
+        apply: migration_001_add_student_age_gender,
+    },
+    Migration {
+        version: "002_add_period_minutes",
+        apply: migration_002_add_period_minutes,
+    },
+    Migration {
+        version: "003_planning_foundation",
+        apply: migration_003_planning_foundation,
+    },
+    Migration {
+        version: "004_detailed_plan_attachment",
+        apply: migration_004_detailed_plan_attachment,
+    },
+    Migration {
+        version: "005_curriculum_units_month_label",
+        apply: migration_005_curriculum_units_month_label,
+    },
+];
+
+fn apply_schema_migrations(conn: &Connection) -> Result<(), String> {
+    ensure_schema_migrations_table(conn)?;
+    for migration in MIGRATIONS {
+        if is_migration_applied(conn, migration.version)? {
+            continue;
+        }
+        (migration.apply)(conn)?;
+        mark_migration_applied(conn, migration.version)?;
+    }
+    Ok(())
+}
+
+fn ensure_schema_migrations_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,
             applied_at TEXT NOT NULL
         );",
     )
+    .map_err(|e| e.to_string())
+}
+
+fn is_migration_applied(conn: &Connection, version: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT 1 FROM schema_migrations WHERE version = ?1",
+        params![version],
+        |_| Ok(()),
+    )
+    .map(|_| true)
+    .or_else(|e| {
+        if let rusqlite::Error::QueryReturnedNoRows = e {
+            Ok(false)
+        } else {
+            Err(e.to_string())
+        }
+    })
+}
+
+fn mark_migration_applied(conn: &Connection, version: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+        params![version, now()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn migration_001_add_student_age_gender(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "students", "age", "INTEGER")?;
+    add_column_if_missing(conn, "students", "gender", "TEXT")?;
+    Ok(())
+}
+
+fn migration_002_add_period_minutes(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "classes", "period_minutes", "INTEGER NOT NULL DEFAULT 45")
+}
+
+fn migration_003_planning_foundation(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "levels", "default_syllabus_id", "TEXT")?;
+    add_column_if_missing(conn, "levels", "default_calendar_id", "TEXT")?;
+    add_column_if_missing(
+        conn,
+        "levels",
+        "planning_status",
+        "TEXT NOT NULL DEFAULT 'draft'",
+    )?;
+    add_column_if_missing(conn, "classes", "year_plan_id", "TEXT")?;
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS academic_calendars (
+            id TEXT PRIMARY KEY,
+            school_id TEXT NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+            level_id TEXT REFERENCES levels(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            academic_year_start TEXT NOT NULL,
+            academic_year_end TEXT NOT NULL,
+            region_code TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_academic_calendars_school_level ON academic_calendars(school_id, level_id);
+
+        CREATE TABLE IF NOT EXISTS calendar_closure_days (
+            id TEXT PRIMARY KEY,
+            calendar_id TEXT NOT NULL REFERENCES academic_calendars(id) ON DELETE CASCADE,
+            closure_date TEXT NOT NULL,
+            closure_type TEXT NOT NULL,
+            title TEXT,
+            source_provider TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_closure_unique ON calendar_closure_days(calendar_id, closure_date, closure_type);
+
+        CREATE TABLE IF NOT EXISTS syllabus_documents (
+            id TEXT PRIMARY KEY,
+            school_id TEXT NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+            level_id TEXT NOT NULL REFERENCES levels(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            version_label TEXT,
+            source_file_attachment_id TEXT NOT NULL,
+            parser_status TEXT NOT NULL DEFAULT 'pending',
+            llm_extraction_status TEXT NOT NULL DEFAULT 'not_started',
+            coverage_notes TEXT,
+            is_active INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            archived_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_syllabus_documents_level_id ON syllabus_documents(level_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_syllabus_documents_one_active ON syllabus_documents(level_id) WHERE is_active = 1 AND archived_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS curriculum_units (
+            id TEXT PRIMARY KEY,
+            syllabus_id TEXT NOT NULL REFERENCES syllabus_documents(id) ON DELETE CASCADE,
+            unit_code TEXT,
+            title TEXT NOT NULL,
+            description TEXT,
+            recommended_sequence INTEGER NOT NULL,
+            estimated_lessons INTEGER,
+            estimated_weeks INTEGER,
+            assessment_hint TEXT,
+            is_required INTEGER NOT NULL DEFAULT 1,
+            month_label TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_curriculum_units_syllabus_id ON curriculum_units(syllabus_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_curriculum_units_sequence ON curriculum_units(syllabus_id, recommended_sequence);",
+    )
     .map_err(|e| e.to_string())?;
 
-    let migration_applied = |version: &str| -> Result<bool, String> {
-        conn.query_row(
-            "SELECT 1 FROM schema_migrations WHERE version = ?1",
-            params![version],
-            |_| Ok(()),
-        )
-        .map(|_| true)
-        .or_else(|e| {
-            if let rusqlite::Error::QueryReturnedNoRows = e {
-                Ok(false)
-            } else {
-                Err(e.to_string())
-            }
-        })
-    };
+    // Existing databases may not have this column; safe no-op when already present.
+    conn.execute_batch("ALTER TABLE curriculum_units ADD COLUMN month_label TEXT")
+        .ok();
 
-    if !migration_applied("001_add_student_age_gender")? {
-        add_column_if_missing(conn, "students", "age", "INTEGER")?;
-        add_column_if_missing(conn, "students", "gender", "TEXT")?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('001_add_student_age_gender', ?1)",
-            params![now()],
-        )
-        .map_err(|e| e.to_string())?;
-    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS class_schedule_rules (
+            id TEXT PRIMARY KEY,
+            class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+            weekday TEXT NOT NULL,
+            start_time TEXT,
+            end_time TEXT,
+            period_label TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_class_schedule_unique ON class_schedule_rules(class_id, weekday, COALESCE(period_label, '')) WHERE is_active = 1;
 
-    if !migration_applied("002_add_period_minutes")? {
-        add_column_if_missing(conn, "classes", "period_minutes", "INTEGER NOT NULL DEFAULT 45")?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('002_add_period_minutes', ?1)",
-            params![now()],
-        )
-        .map_err(|e| e.to_string())?;
-    }
+        CREATE TABLE IF NOT EXISTS year_plans (
+            id TEXT PRIMARY KEY,
+            school_id TEXT NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+            level_id TEXT NOT NULL REFERENCES levels(id) ON DELETE CASCADE,
+            class_id TEXT REFERENCES classes(id) ON DELETE CASCADE,
+            syllabus_id TEXT NOT NULL REFERENCES syllabus_documents(id),
+            calendar_id TEXT NOT NULL REFERENCES academic_calendars(id),
+            region_code TEXT NOT NULL,
+            plan_scope TEXT NOT NULL,
+            generation_status TEXT NOT NULL,
+            generation_summary TEXT,
+            total_teaching_days INTEGER NOT NULL DEFAULT 0,
+            total_planned_lessons INTEGER NOT NULL DEFAULT 0,
+            holiday_days_excluded INTEGER NOT NULL DEFAULT 0,
+            buffer_days_reserved INTEGER NOT NULL DEFAULT 0,
+            plan_snapshot_json TEXT NOT NULL,
+            generated_at TEXT,
+            published_at TEXT,
+            superseded_by_plan_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_year_plans_level_id ON year_plans(level_id);
+        CREATE INDEX IF NOT EXISTS idx_year_plans_class_id ON year_plans(class_id);
 
-    if !migration_applied("003_planning_foundation")? {
-        add_column_if_missing(conn, "levels", "default_syllabus_id", "TEXT")?;
-        add_column_if_missing(conn, "levels", "default_calendar_id", "TEXT")?;
-        add_column_if_missing(conn, "levels", "planning_status", "TEXT NOT NULL DEFAULT 'draft'")?;
-        add_column_if_missing(conn, "classes", "year_plan_id", "TEXT")?;
+        CREATE TABLE IF NOT EXISTS year_plan_lessons (
+            id TEXT PRIMARY KEY,
+            year_plan_id TEXT NOT NULL REFERENCES year_plans(id) ON DELETE CASCADE,
+            teaching_date TEXT NOT NULL,
+            weekday TEXT NOT NULL,
+            sequence_number INTEGER NOT NULL,
+            curriculum_unit_id TEXT REFERENCES curriculum_units(id),
+            lesson_title TEXT NOT NULL,
+            lesson_objective TEXT,
+            detailed_plan_attached INTEGER NOT NULL DEFAULT 0,
+            coverage_weight REAL,
+            is_buffer INTEGER NOT NULL DEFAULT 0,
+            is_holiday_adjusted INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'planned',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_year_plan_lessons_plan_id ON year_plan_lessons(year_plan_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_year_plan_lessons_plan_date ON year_plan_lessons(year_plan_id, teaching_date);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_year_plan_lessons_plan_seq ON year_plan_lessons(year_plan_id, sequence_number);",
+    )
+    .map_err(|e| e.to_string())
+}
 
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS academic_calendars (
-                id TEXT PRIMARY KEY,
-                school_id TEXT NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
-                level_id TEXT REFERENCES levels(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                academic_year_start TEXT NOT NULL,
-                academic_year_end TEXT NOT NULL,
-                region_code TEXT NOT NULL,
-                timezone TEXT NOT NULL,
-                is_default INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_academic_calendars_school_level ON academic_calendars(school_id, level_id);
+fn migration_004_detailed_plan_attachment(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(
+        conn,
+        "year_plan_lessons",
+        "detailed_plan_attached",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+}
 
-            CREATE TABLE IF NOT EXISTS calendar_closure_days (
-                id TEXT PRIMARY KEY,
-                calendar_id TEXT NOT NULL REFERENCES academic_calendars(id) ON DELETE CASCADE,
-                closure_date TEXT NOT NULL,
-                closure_type TEXT NOT NULL,
-                title TEXT,
-                source_provider TEXT,
-                created_at TEXT NOT NULL
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_closure_unique ON calendar_closure_days(calendar_id, closure_date, closure_type);
-
-            CREATE TABLE IF NOT EXISTS syllabus_documents (
-                id TEXT PRIMARY KEY,
-                school_id TEXT NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
-                level_id TEXT NOT NULL REFERENCES levels(id) ON DELETE CASCADE,
-                title TEXT NOT NULL,
-                version_label TEXT,
-                source_file_attachment_id TEXT NOT NULL,
-                parser_status TEXT NOT NULL DEFAULT 'pending',
-                llm_extraction_status TEXT NOT NULL DEFAULT 'not_started',
-                coverage_notes TEXT,
-                is_active INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                archived_at TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_syllabus_documents_level_id ON syllabus_documents(level_id);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_syllabus_documents_one_active ON syllabus_documents(level_id) WHERE is_active = 1 AND archived_at IS NULL;
-
-            CREATE TABLE IF NOT EXISTS curriculum_units (
-                id TEXT PRIMARY KEY,
-                syllabus_id TEXT NOT NULL REFERENCES syllabus_documents(id) ON DELETE CASCADE,
-                unit_code TEXT,
-                title TEXT NOT NULL,
-                description TEXT,
-                recommended_sequence INTEGER NOT NULL,
-                estimated_lessons INTEGER,
-                estimated_weeks INTEGER,
-                assessment_hint TEXT,
-                is_required INTEGER NOT NULL DEFAULT 1,
-                month_label TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_curriculum_units_syllabus_id ON curriculum_units(syllabus_id);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_curriculum_units_sequence ON curriculum_units(syllabus_id, recommended_sequence);",
-        )
-        .map_err(|e| e.to_string())?;
-
-        // migrate existing databases that lack month_label
-        conn.execute_batch("ALTER TABLE curriculum_units ADD COLUMN month_label TEXT").ok();
-
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS class_schedule_rules (
-                id TEXT PRIMARY KEY,
-                class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
-                weekday TEXT NOT NULL,
-                start_time TEXT,
-                end_time TEXT,
-                period_label TEXT,
-                is_active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_class_schedule_unique ON class_schedule_rules(class_id, weekday, COALESCE(period_label, '')) WHERE is_active = 1;
-
-            CREATE TABLE IF NOT EXISTS year_plans (
-                id TEXT PRIMARY KEY,
-                school_id TEXT NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
-                level_id TEXT NOT NULL REFERENCES levels(id) ON DELETE CASCADE,
-                class_id TEXT REFERENCES classes(id) ON DELETE CASCADE,
-                syllabus_id TEXT NOT NULL REFERENCES syllabus_documents(id),
-                calendar_id TEXT NOT NULL REFERENCES academic_calendars(id),
-                region_code TEXT NOT NULL,
-                plan_scope TEXT NOT NULL,
-                generation_status TEXT NOT NULL,
-                generation_summary TEXT,
-                total_teaching_days INTEGER NOT NULL DEFAULT 0,
-                total_planned_lessons INTEGER NOT NULL DEFAULT 0,
-                holiday_days_excluded INTEGER NOT NULL DEFAULT 0,
-                buffer_days_reserved INTEGER NOT NULL DEFAULT 0,
-                plan_snapshot_json TEXT NOT NULL,
-                generated_at TEXT,
-                published_at TEXT,
-                superseded_by_plan_id TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_year_plans_level_id ON year_plans(level_id);
-            CREATE INDEX IF NOT EXISTS idx_year_plans_class_id ON year_plans(class_id);
-
-            CREATE TABLE IF NOT EXISTS year_plan_lessons (
-                id TEXT PRIMARY KEY,
-                year_plan_id TEXT NOT NULL REFERENCES year_plans(id) ON DELETE CASCADE,
-                teaching_date TEXT NOT NULL,
-                weekday TEXT NOT NULL,
-                sequence_number INTEGER NOT NULL,
-                curriculum_unit_id TEXT REFERENCES curriculum_units(id),
-                lesson_title TEXT NOT NULL,
-                lesson_objective TEXT,
-                detailed_plan_attached INTEGER NOT NULL DEFAULT 0,
-                coverage_weight REAL,
-                is_buffer INTEGER NOT NULL DEFAULT 0,
-                is_holiday_adjusted INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'planned',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_year_plan_lessons_plan_id ON year_plan_lessons(year_plan_id);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_year_plan_lessons_plan_date ON year_plan_lessons(year_plan_id, teaching_date);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_year_plan_lessons_plan_seq ON year_plan_lessons(year_plan_id, sequence_number);",
-        )
-        .map_err(|e| e.to_string())?;
-
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('003_planning_foundation', ?1)",
-            params![now()],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    if !migration_applied("004_detailed_plan_attachment")? {
-        add_column_if_missing(
-            conn,
-            "year_plan_lessons",
-            "detailed_plan_attached",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('004_detailed_plan_attachment', ?1)",
-            params![now()],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    if !migration_applied("005_curriculum_units_month_label")? {
-        add_column_if_missing(conn, "curriculum_units", "month_label", "TEXT")?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('005_curriculum_units_month_label', ?1)",
-            params![now()],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
+fn migration_005_curriculum_units_month_label(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "curriculum_units", "month_label", "TEXT")
 }
 
 pub fn now() -> String {
