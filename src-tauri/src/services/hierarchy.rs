@@ -46,13 +46,13 @@ impl Database {
 
     pub fn with_conn<T>(
         &self,
-        f: impl FnOnce(&Connection) -> Result<T, String>,
+        f: impl FnOnce(&mut Connection) -> Result<T, String>,
     ) -> Result<T, String> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|_| "database lock poisoned".to_string())?;
-        f(&conn)
+        f(&mut conn)
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -71,7 +71,7 @@ struct Migration {
     apply: MigrationFn,
 }
 
-const MIGRATIONS: [Migration; 5] = [
+const MIGRATIONS: [Migration; 6] = [
     Migration {
         version: "001_add_student_age_gender",
         apply: migration_001_add_student_age_gender,
@@ -91,6 +91,10 @@ const MIGRATIONS: [Migration; 5] = [
     Migration {
         version: "005_curriculum_units_month_label",
         apply: migration_005_curriculum_units_month_label,
+    },
+    Migration {
+        version: "006_agent_insights_index",
+        apply: migration_006_agent_insights_index,
     },
 ];
 
@@ -305,6 +309,15 @@ fn migration_004_detailed_plan_attachment(conn: &Connection) -> Result<(), Strin
 
 fn migration_005_curriculum_units_month_label(conn: &Connection) -> Result<(), String> {
     add_column_if_missing(conn, "curriculum_units", "month_label", "TEXT")
+}
+
+fn migration_006_agent_insights_index(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_insights_class_created ON agent_insights(class_id, created_at DESC)",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn now() -> String {

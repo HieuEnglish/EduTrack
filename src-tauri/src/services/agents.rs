@@ -1,7 +1,41 @@
 use crate::services::hierarchy::{new_id, now, DbState};
 use regex::Regex;
-use rusqlite::params;
+use rusqlite::{params, Transaction};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+
+pub const AGENT_TYPES: [&str; 7] = [
+    "attendance",
+    "planning",
+    "performance",
+    "assignments",
+    "engagement",
+    "reports",
+    "syllabus",
+];
+
+static BLOCKED_RE: OnceLock<Regex> = OnceLock::new();
+static CONTINUATION_RE: OnceLock<Regex> = OnceLock::new();
+static UNIT_PREFIX_RE: OnceLock<Regex> = OnceLock::new();
+
+fn blocked_re() -> &'static Regex {
+    BLOCKED_RE.get_or_init(|| {
+        Regex::new(r"(?i)^(at the end of the unit|students will be able to|learning objective|success criteria)")
+            .expect("valid blocked regex")
+    })
+}
+
+fn continuation_re() -> &'static Regex {
+    CONTINUATION_RE.get_or_init(|| {
+        Regex::new(r"(?i)\((?:continuation|continued)\)").expect("valid continuation regex")
+    })
+}
+
+fn unit_prefix_re() -> &'static Regex {
+    UNIT_PREFIX_RE.get_or_init(|| {
+        Regex::new(r"(?i)^\s*unit\s*\d{1,2}\s*[:.\-]?\s*").expect("valid unit prefix regex")
+    })
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -122,13 +156,14 @@ pub async fn run_class_agents(
                 syllabus_extraction_insights(conn, &class_id),
             );
         }
-        conn.execute(
+        let tx: Transaction<'_> = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
             "DELETE FROM agent_insights WHERE class_id = ?1",
             params![class_id],
         )
         .map_err(|e| e.to_string())?;
         for insight in &insights {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO agent_insights (id, class_id, student_id, agent_type, severity, title, body, source_event_type, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
@@ -145,6 +180,7 @@ pub async fn run_class_agents(
             )
             .map_err(|e| e.to_string())?;
         }
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(insights)
     })
 }
@@ -201,15 +237,7 @@ fn enabled_agents(conn: &rusqlite::Connection, class_id: &str) -> Result<Vec<Str
         .collect::<Result<Vec<String>, _>>()
         .map_err(|e| e.to_string())?;
     if agents.is_empty() {
-        Ok(vec![
-            "attendance".to_string(),
-            "planning".to_string(),
-            "performance".to_string(),
-            "assignments".to_string(),
-            "engagement".to_string(),
-            "reports".to_string(),
-            "syllabus".to_string(),
-        ])
+        Ok(AGENT_TYPES.iter().map(|s| (*s).to_string()).collect())
     } else {
         Ok(agents)
     }
@@ -285,7 +313,16 @@ fn planning_insights(
     }])
 }
 
-const PERFORMANCE_DECLINE_POINTS: f64 = 5.0;
+const PERFORMANCE_DECLINE_SQL: &str = "SELECT COUNT(*) FROM (
+    SELECT as2.student_id,
+           AVG(CASE WHEN a.assessment_date >= date('now', '-14 days') THEN as2.score_value END) as recent_avg,
+           AVG(CASE WHEN a.assessment_date < date('now', '-14 days') THEN as2.score_value END) as past_avg
+    FROM assessment_scores as2
+    JOIN assessments a ON as2.assessment_id = a.id
+    WHERE a.class_id = ?1 AND as2.score_value IS NOT NULL
+    GROUP BY as2.student_id
+    HAVING past_avg IS NOT NULL AND recent_avg IS NOT NULL AND recent_avg < past_avg - 5.0
+)";
 
 fn performance_insights(
     conn: &rusqlite::Connection,
@@ -324,20 +361,8 @@ fn performance_insights(
         }
         return Ok(insights);
     }
-    let sql = format!(
-        "SELECT COUNT(*) FROM (
-            SELECT as2.student_id,
-                   AVG(CASE WHEN a.assessment_date >= date('now', '-14 days') THEN as2.score_value END) as recent_avg,
-                   AVG(CASE WHEN a.assessment_date < date('now', '-14 days') THEN as2.score_value END) as past_avg
-            FROM assessment_scores as2
-            JOIN assessments a ON as2.assessment_id = a.id
-            WHERE a.class_id = ?1 AND as2.score_value IS NOT NULL
-            GROUP BY as2.student_id
-            HAVING past_avg IS NOT NULL AND recent_avg IS NOT NULL AND recent_avg < past_avg - {PERFORMANCE_DECLINE_POINTS}
-        )"
-    );
     let declining: i32 = conn
-        .query_row(&sql, params![class_id], |row| row.get(0))
+        .query_row(PERFORMANCE_DECLINE_SQL, params![class_id], |row| row.get(0))
         .unwrap_or(0);
     if declining > 0 {
         let s = if declining == 1 { "" } else { "s" };
@@ -398,8 +423,8 @@ fn engagement_insights(
     class_id: &str,
 ) -> Result<Vec<AgentInsight>, String> {
     let mut insights = Vec::new();
-    let total_sessions: i32 = conn.query_row("SELECT COUNT(*) FROM sessions WHERE class_id = ?1", params![class_id], |row| row.get(0)).unwrap_or(0);
-    let completed_sessions: i32 = conn.query_row("SELECT COUNT(*) FROM sessions WHERE class_id = ?1 AND completed = 1", params![class_id], |row| row.get(0)).unwrap_or(0);
+    let total_sessions: i32 = conn.query_row("SELECT COUNT(*) FROM sessions WHERE class_id = ?1", params![class_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let completed_sessions: i32 = conn.query_row("SELECT COUNT(*) FROM sessions WHERE class_id = ?1 AND completed = 1", params![class_id], |row| row.get(0)).map_err(|e| e.to_string())?;
     if total_sessions > 0 && (completed_sessions as f64) / (total_sessions as f64) < 0.5 {
         insights.push(AgentInsight {
             id: new_id("insight"),
@@ -424,7 +449,7 @@ fn engagement_insights(
             params![class_id],
             |row| row.get(0),
         )
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     if late_pattern > 0 {
         let s = if late_pattern == 1 { "" } else { "s" };
         let verb = if late_pattern == 1 { " has" } else { "s have" };
@@ -450,10 +475,10 @@ fn report_writer_insights(
     let mut insights = Vec::new();
     let student_count: i32 = conn
         .query_row("SELECT COUNT(*) FROM students WHERE class_id = ?1 AND archived_at IS NULL", params![class_id], |row| row.get(0))
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     let report_count: i32 = conn
         .query_row("SELECT COUNT(*) FROM student_reports WHERE class_id = ?1", params![class_id], |row| row.get(0))
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     if student_count > 0 && report_count == 0 {
         let s = if student_count == 1 { "" } else { "s" };
         insights.push(AgentInsight {
@@ -609,27 +634,19 @@ fn syllabus_extraction_insights(
     let mut blocked_count = 0;
     let mut continuation_count = 0;
     let mut write_variant_pairs = 0;
-    let blocked_re = Regex::new(
-        r"(?i)^(at the end of the unit|students will be able to|learning objective|success criteria)",
-    )
-    .expect("valid blocked regex");
-    let continuation_re =
-        Regex::new(r"(?i)\((?:continuation|continued)\)").expect("valid continuation regex");
-    let unit_prefix_re = Regex::new(r"(?i)^\s*unit\s*\d{1,2}\s*[:.\-]?\s*")
-        .expect("valid unit prefix regex");
 
     let mut seen_cores: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     for (_, title, _) in &units {
         let cleaned = title.trim();
-        if cleaned.is_empty() || blocked_re.is_match(cleaned) {
+        if cleaned.is_empty() || blocked_re().is_match(cleaned) {
             blocked_count += 1;
             continue;
         }
-        if continuation_re.is_match(cleaned) {
+        if continuation_re().is_match(cleaned) {
             continuation_count += 1;
             continue;
         }
-        let stripped = unit_prefix_re.replace(cleaned, "").trim().to_string();
+        let stripped = unit_prefix_re().replace(cleaned, "").trim().to_string();
         let lower = stripped.to_ascii_lowercase();
         let is_write = lower.starts_with("write ") || lower.starts_with("writing ");
         let core = if is_write {
@@ -757,7 +774,7 @@ fn syllabus_extraction_insights(
             agent_type: "syllabus".to_string(),
             severity: "warning".to_string(),
             title: "Duplicate write-variant titles".to_string(),
-            body: format!("{write_variant_pairs} unit{0} appear{1} both with and without 'Write a...' prefix. Remove the redundant variant.", "", if write_variant_pairs == 1 { "s" } else { "" }),
+            body: format!("{write_variant_pairs} unit{} appear{} both with and without 'Write a...' prefix. Remove the redundant variant.", if write_variant_pairs == 1 { "" } else { "s" }, if write_variant_pairs == 1 { "s" } else { "" }),
             source_event_type: Some("curriculum_units".to_string()),
             created_at: now(),
         });
