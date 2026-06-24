@@ -1,4 +1,5 @@
 use crate::services::hierarchy::{get_class, new_id, now, DbState, Student};
+use crate::services::jobs::{complete_job, create_job, fail_job, mark_job_running};
 use crate::services::llm_service::{generate_local_report, load_llm_config};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -111,20 +112,27 @@ pub async fn get_class_report_status(
     class_id: String,
 ) -> Result<Vec<StudentReportStatus>, String> {
     state.with_conn(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT s.id, s.full_name, sr.id, sr.updated_at
+        let mut stmt = conn
+            .prepare(
+                "SELECT s.id, s.full_name, sr.id, sr.updated_at
              FROM students s LEFT JOIN student_reports sr ON sr.student_id = s.id
-             WHERE s.class_id = ?1 AND s.archived_at IS NULL ORDER BY s.full_name"
-        ).map_err(|e| e.to_string())?;
-        let result = stmt.query_map(params![class_id], |row| {
-            let report_id: Option<String> = row.get(2)?;
-            Ok(StudentReportStatus {
-                student_id: row.get(0)?, student_name: row.get(1)?,
-                report_id: report_id.clone(), report_exists: report_id.is_some(),
-                last_updated: row.get(3)?,
+             WHERE s.class_id = ?1 AND s.archived_at IS NULL ORDER BY s.full_name",
+            )
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_map(params![class_id], |row| {
+                let report_id: Option<String> = row.get(2)?;
+                Ok(StudentReportStatus {
+                    student_id: row.get(0)?,
+                    student_name: row.get(1)?,
+                    report_id: report_id.clone(),
+                    report_exists: report_id.is_some(),
+                    last_updated: row.get(3)?,
+                })
             })
-        }).map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string());
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string());
         result
     })
 }
@@ -145,7 +153,7 @@ pub async fn generate_student_report_v2(
     teacher_instructions: Option<String>,
     word_count_target: Option<i32>,
 ) -> Result<String, String> {
-    state.with_conn(|conn| {
+    let (student, target, prompt, config, job_id) = state.with_conn(|conn| {
         let student = load_student(conn, &student_id)?;
         let class = get_class(conn, &class_id)?;
         let bundle = get_student_data_bundle_internal(conn, &student_id)?;
@@ -178,40 +186,50 @@ Write in paragraphs: academic progress, strengths, areas for growth, and recomme
             bundle = format!("{}\n{}", bundle.attendance_summary, bundle.assessment_summary),
             teacher_note = teacher_note,
         );
-
         let config = load_llm_config(conn);
-        let report_text = match generate_local_report(&config, &prompt) {
-            Ok(text) => {
-                let trimmed = text.trim().to_string();
-                if trimmed.len() < 20 || trimmed.len() > 100_000 {
-                    let avg = bundle.avg_score.map(|s| format!("{s:.1}")).unwrap_or_else(|| "N/A".to_string());
-                    let rate = format!("{:.0}%", bundle.attendance_rate);
-                    format!(
-                        "{name} has shown progress in {subject} this term. Attendance is at {rate} with {sessions} recorded sessions. Average assessment score is {avg}. {name} engages with class activities and is developing confidence with the curriculum. Next term, continued focus and targeted practice will support further growth.",
-                        name = student.full_name, subject = class.subject_name.as_deref().unwrap_or("the subject"),
-                        rate = rate, sessions = bundle.session_count, avg = avg,
-                    )
-                } else {
-                    trimmed
-                }
-            }
-            Err(_) => {
-                let avg = bundle.avg_score.map(|s| format!("{s:.1}")).unwrap_or_else(|| "N/A".to_string());
-                let rate = format!("{:.0}%", bundle.attendance_rate);
+        let job_id = create_job(
+            conn,
+            "report_generation",
+            Some("student"),
+            Some(&student_id),
+            1,
+            Some("Queued student report generation"),
+        )?;
+        mark_job_running(conn, &job_id, Some("Generating student report"))?;
+        Ok::<_, String>((student, target, prompt, config, job_id))
+    })?;
+
+    let report_text = match generate_local_report(&config, &prompt) {
+        Ok(text) => {
+            let trimmed = text.trim().to_string();
+            if trimmed.len() < 20 || trimmed.len() > 100_000 {
+                state.with_conn(|conn| {
+                    fail_job(conn, &job_id, "provider returned unusable report text")
+                })?;
                 format!(
-                    "{name} has shown progress in {subject} this term. Attendance is at {rate} with {sessions} recorded sessions. Average assessment score is {avg}. {name} engages with class activities and is developing confidence with the curriculum. Next term, continued focus and targeted practice will support further growth.",
-                    name = student.full_name, subject = class.subject_name.as_deref().unwrap_or("the subject"),
-                    rate = rate, sessions = bundle.session_count, avg = avg,
+                    "Report draft requires teacher review.\n\nThe model provider returned unusable report text, so EduTrack did not generate a narrative report for {}. Review the attendance and assessment data, then write or regenerate this report.",
+                    student.full_name
                 )
+            } else {
+                trimmed
             }
-        };
+        }
+        Err(err) => {
+            state.with_conn(|conn| fail_job(conn, &job_id, &err))?;
+            format!(
+                "Report draft requires teacher review.\n\nEduTrack could not generate an AI report for {} because the model provider failed: {}. No generic report was substituted.",
+                student.full_name, err
+            )
+        }
+    };
 
-        let advice = Some(format!(
-            "Teacher: Review this draft, add specific examples from classroom observations, and adjust the recommendations. Prioritize 2-3 next steps for {}.",
-            student.preferred_name.as_deref().unwrap_or(&student.full_name)
-        ));
+    let advice = Some(format!(
+        "Teacher: Review this draft, add specific examples from classroom observations, and adjust the recommendations. Prioritize 2-3 next steps for {}.",
+        student.preferred_name.as_deref().unwrap_or(&student.full_name)
+    ));
 
-        let report_id = new_id("report");
+    let report_id = new_id("report");
+    state.with_conn(|conn| {
         replace_student_report_record(
             conn,
             &report_id,
@@ -221,12 +239,17 @@ Write in paragraphs: academic progress, strengths, areas for growth, and recomme
             &report_text,
             advice.as_deref(),
         )?;
-
+        if !report_text.starts_with("Report draft requires teacher review.") {
+            complete_job(conn, &job_id, Some("Student report generated"))?;
+        }
         Ok(report_id)
     })
 }
 
-fn get_student_data_bundle_internal(conn: &rusqlite::Connection, student_id: &str) -> Result<StudentDataBundle, String> {
+fn get_student_data_bundle_internal(
+    conn: &rusqlite::Connection,
+    student_id: &str,
+) -> Result<StudentDataBundle, String> {
     let student = load_student(conn, student_id)?;
     let total_sessions: i32 = conn.query_row(
         "SELECT COUNT(*) FROM sessions s JOIN students st ON st.class_id = s.class_id WHERE st.id = ?1",
@@ -245,7 +268,11 @@ fn get_student_data_bundle_internal(conn: &rusqlite::Connection, student_id: &st
         params![student_id], |row| row.get(0),
     ).unwrap_or(0);
     let total_attended = presents + lates;
-    let attendance_rate = if total_sessions > 0 { (total_attended as f64 / total_sessions as f64) * 100.0 } else { 0.0 };
+    let attendance_rate = if total_sessions > 0 {
+        (total_attended as f64 / total_sessions as f64) * 100.0
+    } else {
+        0.0
+    };
     let attendance_summary = format!("Attendance: {presents} present, {lates} late, {absences} absent across {total_sessions} sessions ({attendance_rate:.0}% rate).");
 
     let avg_score: Option<f64> = conn.query_row(
@@ -254,29 +281,44 @@ fn get_student_data_bundle_internal(conn: &rusqlite::Connection, student_id: &st
     ).ok();
 
     let recent: Vec<(String, f64)> = {
-        let mut stmt = conn.prepare(
-            "SELECT a.title, COALESCE(as2.score_value, 0) FROM assessment_scores as2
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.title, COALESCE(as2.score_value, 0) FROM assessment_scores as2
              JOIN assessments a ON as2.assessment_id = a.id
              WHERE as2.student_id = ?1 AND as2.score_value IS NOT NULL
-             ORDER BY a.assessment_date DESC LIMIT 5"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(params![student_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
-        }).map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+             ORDER BY a.assessment_date DESC LIMIT 5",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![student_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
     };
 
     let assessment_summary = if recent.is_empty() {
         "No assessment scores recorded yet.".to_string()
     } else {
-        let mut s = format!("Recent assessments (average: {:.1}):", avg_score.unwrap_or(0.0));
+        let mut s = format!(
+            "Recent assessments (average: {:.1}):",
+            avg_score.unwrap_or(0.0)
+        );
         for (title, score) in &recent {
             s.push_str(&format!("\n- {title}: {score}"));
         }
         s
     };
 
-    Ok(StudentDataBundle { student, attendance_summary, assessment_summary, session_count: total_sessions, attendance_rate, avg_score })
+    Ok(StudentDataBundle {
+        student,
+        attendance_summary,
+        assessment_summary,
+        session_count: total_sessions,
+        attendance_rate,
+        avg_score,
+    })
 }
 
 fn update_student_report_row(

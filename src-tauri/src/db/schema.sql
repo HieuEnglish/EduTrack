@@ -371,6 +371,27 @@ CREATE TABLE audit_events (
   created_at TEXT NOT NULL
 );
 
+-- Long-running job records
+CREATE TABLE jobs (
+  id TEXT PRIMARY KEY,
+  job_type TEXT NOT NULL,
+  entity_type TEXT,
+  entity_id TEXT,
+  status TEXT NOT NULL,
+  progress_current INTEGER NOT NULL DEFAULT 0,
+  progress_total INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  error TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_jobs_status_updated ON jobs(status, updated_at DESC);
+CREATE INDEX idx_jobs_entity ON jobs(entity_type, entity_id);
+
 -- Schema migrations table
 CREATE TABLE schema_migrations (
   version TEXT PRIMARY KEY,

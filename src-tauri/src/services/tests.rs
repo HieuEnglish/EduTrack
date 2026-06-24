@@ -1,4 +1,7 @@
 use crate::services::hierarchy::{get_class, get_level, new_id, now, DbState};
+use crate::services::jobs::{
+    complete_job, create_job, fail_job, is_cancel_requested, mark_job_running, update_job_progress,
+};
 use crate::services::llm_service::{
     generate_local_report, load_and_probe_llm_config, probe_opencode_cli,
 };
@@ -9,6 +12,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const MAX_LINK_SUBMISSION_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -127,7 +132,14 @@ pub async fn create_test(
 ) -> Result<String, String> {
     state.with_conn(|conn| {
         let _class = get_class(conn, &class_id)?;
-        create_test_rows(conn, &class_id, &title, &instructions, &scoring_rubric, max_score)
+        create_test_rows(
+            conn,
+            &class_id,
+            &title,
+            &instructions,
+            &scoring_rubric,
+            max_score,
+        )
     })
 }
 
@@ -348,7 +360,10 @@ pub async fn upload_submission_file(
         .join(format!("school_{}", sanitize_path_component(&school_id)))
         .join(format!("level_{}", sanitize_path_component(&level_id)))
         .join(format!("class_{}", sanitize_path_component(&class_id)))
-        .join(format!("assessment_{}", sanitize_path_component(&assessment_id)))
+        .join(format!(
+            "assessment_{}",
+            sanitize_path_component(&assessment_id)
+        ))
         .join(format!("student_{}", sanitize_path_component(&student_id)));
     let upload_dir = structured_dir;
     std::fs::create_dir_all(&upload_dir).map_err(|e| e.to_string())?;
@@ -382,9 +397,7 @@ pub async fn upload_submission_link(
     file_url: String,
 ) -> Result<String, String> {
     let url = file_url.trim();
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("Only http/https links are supported".to_string());
-    }
+    validate_submission_url(url)?;
 
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(60))
@@ -393,6 +406,11 @@ pub async fn upload_submission_link(
     let response = client.get(url).send().map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!("Download failed: HTTP {}", response.status()));
+    }
+    if let Some(size) = response.content_length() {
+        if size > MAX_LINK_SUBMISSION_BYTES as u64 {
+            return Err("Linked submission is too large; upload files up to 25 MB".to_string());
+        }
     }
 
     let mime_type = response
@@ -414,6 +432,9 @@ pub async fn upload_submission_link(
     }
 
     let file_data = response.bytes().map_err(|e| e.to_string())?.to_vec();
+    if file_data.len() > MAX_LINK_SUBMISSION_BYTES {
+        return Err("Linked submission is too large; upload files up to 25 MB".to_string());
+    }
 
     upload_submission_file(
         state,
@@ -424,6 +445,43 @@ pub async fn upload_submission_link(
         mime_type,
     )
     .await
+}
+
+fn validate_submission_url(raw_url: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(raw_url)
+        .map_err(|_| "Submission link is not a valid URL".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("Only http/https links are supported".to_string());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Submission link must include a host".to_string())?
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return Err("Localhost submission links are not allowed".to_string());
+    }
+    if host == "::1"
+        || host.starts_with("127.")
+        || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || host.starts_with("169.254.")
+    {
+        return Err("Private network submission links are not allowed".to_string());
+    }
+    if let Some(second) = host
+        .strip_prefix("172.")
+        .and_then(|rest| rest.split('.').next())
+    {
+        if second
+            .parse::<u8>()
+            .map(|value| (16..=31).contains(&value))
+            .unwrap_or(false)
+        {
+            return Err("Private network submission links are not allowed".to_string());
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -595,6 +653,125 @@ fn update_submission_score(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct GradeTarget {
+    score_id: String,
+    student_id: String,
+    student_name: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    storage_path: Option<String>,
+}
+
+fn update_auto_submission_result(
+    conn: &Connection,
+    score_id: &str,
+    score: Option<f64>,
+    label: &str,
+    comment: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE assessment_scores SET score_value = ?1, score_label = ?2, teacher_comment = ?3, updated_at = ?4 WHERE id = ?5",
+        params![score, label, comment, now(), score_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn evaluate_submission_for_auto_score(
+    target: &GradeTarget,
+    instructions: &str,
+    scoring_rubric: &str,
+    max_score: f64,
+    llm_config: &crate::services::llm_service::LocalModelConfig,
+) -> (Option<f64>, String, String, String) {
+    let fname = target.file_name.clone().unwrap_or_default();
+    let Some(path) = target.storage_path.as_deref() else {
+        return (
+            Some(0.0),
+            "No submission".to_string(),
+            "No file submitted. Score set to 0.".to_string(),
+            "scored".to_string(),
+        );
+    };
+
+    match extract_submission_content_for_scoring(path, target.mime_type.as_deref()) {
+        Ok(content) if llm_config.available && !content.text.trim().is_empty() => {
+            let prompt = format!(
+                "You are an expert teacher and grader.\n\n\
+                 Assignment instructions:\n{instructions}\n\n\
+                 Scoring rubric:\n{scoring_rubric}\n\n\
+                 Maximum score: {max_score}\n\n\
+                 Student: {student_name}\n\
+                 Submission source: {source}\n\
+                 Submission content:\n---\n{submission}\n---\n\n\
+                 Return ONLY valid JSON with this shape:\n\
+                 {{\n\
+                   \"score\": number,\n\
+                   \"label\": string,\n\
+                   \"summary\": string,\n\
+                   \"whatWentWrong\": string[],\n\
+                   \"improvementSteps\": string[]\n\
+                 }}\n\
+                 Rules:\n\
+                 - score must be between 0 and {max_score}\n\
+                 - label should be one of: Excellent, Good, Developing, Needs Improvement\n\
+                 - summary must be specific and concise\n\
+                 - include at least 2 items in whatWentWrong and improvementSteps when possible.",
+                student_name = target.student_name,
+                source = content.source_note,
+                submission = content.text.chars().take(22_000).collect::<String>(),
+            );
+            match generate_local_report(llm_config, &prompt) {
+                Ok(response) => {
+                    if let Some((parsed_score, parsed_label, parsed_feedback)) =
+                        parse_grading_response(&response, max_score)
+                    {
+                        (Some(parsed_score), parsed_label, parsed_feedback, "scored".to_string())
+                    } else {
+                        (
+                            None,
+                            "Needs review".to_string(),
+                            format!(
+                                "{}\n\nModel response could not be parsed, so no score was assigned. Review manually.\nRaw model output:\n{}",
+                                content.source_note,
+                                response.trim().chars().take(1200).collect::<String>()
+                            ),
+                            "pending".to_string(),
+                        )
+                    }
+                }
+                Err(err) => (
+                    None,
+                    "Needs review".to_string(),
+                    format!(
+                        "{}\n\nLLM grading failed ({err}). No estimated score was assigned; review manually.",
+                        content.source_note
+                    ),
+                    "pending".to_string(),
+                ),
+            }
+        }
+        Ok(content) => (
+            None,
+            "Needs review".to_string(),
+            format!(
+                "{}\n\nContent was extracted, but LLM auto-grading is unavailable. No estimated score was assigned; review manually.",
+                content.source_note
+            ),
+            "pending".to_string(),
+        ),
+        Err(err) => (
+            None,
+            "Needs review".to_string(),
+            format!(
+                "File '{fname}' could not be auto-processed.\nReason: {err}\nNo score was assigned; review manually or upload a text/PDF/docx submission."
+            ),
+            "pending".to_string(),
+        ),
+    }
+}
+
 #[tauri::command]
 pub async fn auto_score_submissions(
     state: DbState<'_>,
@@ -605,12 +782,14 @@ pub async fn auto_score_submissions(
         Ok((config.provider, config.model, config.available))
     })?;
 
-    state.with_conn(|conn| {
-        let rubric: String = conn.query_row(
-            "SELECT COALESCE(description, '') FROM assessments WHERE id = ?1",
-            params![assessment_id],
-            |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
+    let (instructions, scoring_rubric, max_score, targets, job_id) = state.with_conn(|conn| {
+        let rubric: String = conn
+            .query_row(
+                "SELECT COALESCE(description, '') FROM assessments WHERE id = ?1",
+                params![assessment_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
 
         let (instructions, scoring_rubric, max_score) = parse_assessment_payload(&rubric);
 
@@ -622,131 +801,78 @@ pub async fn auto_score_submissions(
              WHERE as2.assessment_id = ?1 AND s.archived_at IS NULL"
         ).map_err(|e| e.to_string())?;
 
-        let llm_config = crate::services::llm_service::LocalModelConfig {
-            provider: config_provider,
-            model: config_model,
-            available: llm_available,
-            detail: String::new(),
-        };
-
-        let mut results = Vec::new();
-        let rows = stmt.query_map(params![assessment_id], |row| {
-            let score_id: String = row.get(0)?;
-            let student_id: String = row.get(1)?;
-            let student_name: String = row.get(2)?;
-            let file_name: Option<String> = row.get(3)?;
-            let mime_type: Option<String> = row.get(4)?;
-            let storage_path: Option<String> = row.get(5)?;
-
-            let fname = file_name.clone().unwrap_or_default();
-
-            let (auto_score, label, comment) = if let Some(path) = storage_path {
-                match extract_submission_content_for_scoring(&path, mime_type.as_deref()) {
-                    Ok(content) if llm_available && !content.text.trim().is_empty() => {
-                        let prompt = format!(
-                            "You are an expert teacher and grader.\n\n\
-                             Assignment instructions:\n{instructions}\n\n\
-                             Scoring rubric:\n{scoring_rubric}\n\n\
-                             Maximum score: {max_score}\n\n\
-                             Student: {student_name}\n\
-                             Submission source: {source}\n\
-                             Submission content:\n---\n{submission}\n---\n\n\
-                             Return ONLY valid JSON with this shape:\n\
-                             {{\n\
-                               \"score\": number,\n\
-                               \"label\": string,\n\
-                               \"summary\": string,\n\
-                               \"whatWentWrong\": string[],\n\
-                               \"improvementSteps\": string[]\n\
-                             }}\n\
-                             Rules:\n\
-                             - score must be between 0 and {max_score}\n\
-                             - label should be one of: Excellent, Good, Developing, Needs Improvement\n\
-                             - summary must be specific and concise\n\
-                             - include at least 2 items in whatWentWrong and improvementSteps when possible.",
-                            source = content.source_note,
-                            submission = content.text.chars().take(22_000).collect::<String>(),
-                        );
-                        match generate_local_report(&llm_config, &prompt) {
-                            Ok(response) => {
-                                if let Some((parsed_score, parsed_label, parsed_feedback)) =
-                                    parse_grading_response(&response, max_score)
-                                {
-                                    (parsed_score, parsed_label, parsed_feedback)
-                                } else {
-                                    let fallback = (max_score * 0.75).round().max(1.0);
-                                    (
-                                        fallback,
-                                        "Auto-assessed".to_string(),
-                                        format!(
-                                            "{}\n\nModel response could not be fully parsed. Review and adjust.\nRaw model output:\n{}",
-                                            content.source_note,
-                                            response.trim().chars().take(1200).collect::<String>()
-                                        ),
-                                    )
-                                }
-                            }
-                            Err(err) => {
-                                let fallback = (max_score * 0.75).round().max(1.0);
-                                (
-                                    fallback,
-                                    "Auto-assessed".to_string(),
-                                    format!(
-                                        "{}\n\nAuto-scored estimate used because LLM was unavailable ({err}). Review and adjust.",
-                                        content.source_note
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                    Ok(content) => {
-                        let fallback = (max_score * 0.7).round().max(1.0);
-                        (
-                            fallback,
-                            "Needs review".to_string(),
-                            format!(
-                                "{}\n\nContent was extracted, but LLM auto-grading is unavailable. Estimated score set for teacher review.",
-                                content.source_note
-                            ),
-                        )
-                    }
-                    Err(err) => (
-                        0.0,
-                        "Needs review".to_string(),
-                        format!(
-                            "File '{fname}' could not be auto-processed.\nReason: {err}\nPlease review manually or upload a text/PDF/docx submission."
-                        ),
-                    ),
-                }
-            } else {
-                (0.0, "No submission".to_string(),
-                 "No file submitted. Score set to 0.".to_string())
-            };
-
-            conn.execute(
-                "UPDATE assessment_scores SET score_value = ?1, score_label = ?2, teacher_comment = ?3, updated_at = ?4 WHERE id = ?5",
-                params![auto_score, label, comment, now(), score_id],
-            ).ok();
-
-            Ok(StudentSubmission {
-                student_id,
-                student_name,
-                assessment_id: assessment_id.clone(),
-                score_value: Some(auto_score),
-                score_label: Some(label),
-                teacher_comment: Some(comment),
-                attachment_id: None,
-                file_name,
-                mime_type,
-                status: "scored".to_string(),
+        let targets = stmt
+            .query_map(params![assessment_id], |row| {
+                Ok(GradeTarget {
+                    score_id: row.get(0)?,
+                    student_id: row.get(1)?,
+                    student_name: row.get(2)?,
+                    file_name: row.get(3)?,
+                    mime_type: row.get(4)?,
+                    storage_path: row.get(5)?,
+                })
             })
-        }).map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let job_id = create_job(
+            conn,
+            "grading",
+            Some("assessment"),
+            Some(&assessment_id),
+            targets.len() as i32,
+            Some("Queued assessment grading"),
+        )?;
+        mark_job_running(conn, &job_id, Some("Grading submissions"))?;
+        Ok((instructions, scoring_rubric, max_score, targets, job_id))
+    })?;
 
-        for row in rows {
-            results.push(row.map_err(|e| e.to_string())?);
+    let llm_config = crate::services::llm_service::LocalModelConfig {
+        provider: config_provider,
+        model: config_model,
+        available: llm_available,
+        detail: String::new(),
+    };
+    let total = targets.len() as i32;
+    let mut results = Vec::new();
+    for (index, target) in targets.into_iter().enumerate() {
+        let cancelled = state.with_conn(|conn| is_cancel_requested(conn, &job_id))?;
+        if cancelled {
+            state.with_conn(|conn| fail_job(conn, &job_id, "grading cancelled"))?;
+            return Err("grading cancelled".to_string());
         }
-        Ok(results)
-    })
+        let (score, label, comment, status) = evaluate_submission_for_auto_score(
+            &target,
+            &instructions,
+            &scoring_rubric,
+            max_score,
+            &llm_config,
+        );
+        state.with_conn(|conn| {
+            update_auto_submission_result(conn, &target.score_id, score, &label, &comment)?;
+            update_job_progress(
+                conn,
+                &job_id,
+                (index + 1) as i32,
+                total,
+                Some(&format!("Graded {}", target.student_name)),
+            )
+        })?;
+        results.push(StudentSubmission {
+            student_id: target.student_id,
+            student_name: target.student_name,
+            assessment_id: assessment_id.clone(),
+            score_value: score,
+            score_label: Some(label),
+            teacher_comment: Some(comment),
+            attachment_id: None,
+            file_name: target.file_name,
+            mime_type: target.mime_type,
+            status,
+        });
+    }
+    state.with_conn(|conn| complete_job(conn, &job_id, Some("Assessment grading finished")))?;
+    Ok(results)
 }
 
 #[tauri::command]
@@ -760,7 +886,7 @@ pub async fn auto_score_single_submission(
         Ok((config.provider, config.model, config.available))
     })?;
 
-    state.with_conn(|conn| {
+    let (instructions, scoring_rubric, max_score, target, job_id) = state.with_conn(|conn| {
         let rubric: String = conn
             .query_row(
                 "SELECT COALESCE(description, '') FROM assessments WHERE id = ?1",
@@ -796,119 +922,56 @@ pub async fn auto_score_single_submission(
                 },
             )
             .map_err(|_| "Submission not found for student".to_string())?;
-
-        let llm_config = crate::services::llm_service::LocalModelConfig {
-            provider: config_provider,
-            model: config_model,
-            available: llm_available,
-            detail: String::new(),
-        };
-
-        let fname = file_name.clone().unwrap_or_default();
-        let (auto_score, label, comment) = if let Some(path) = storage_path {
-            match extract_submission_content_for_scoring(&path, mime_type.as_deref()) {
-                Ok(content) if llm_available && !content.text.trim().is_empty() => {
-                    let prompt = format!(
-                        "You are an expert teacher and grader.\n\n\
-                         Assignment instructions:\n{instructions}\n\n\
-                         Scoring rubric:\n{scoring_rubric}\n\n\
-                         Maximum score: {max_score}\n\n\
-                         Student: {student_name}\n\
-                         Submission source: {source}\n\
-                         Submission content:\n---\n{submission}\n---\n\n\
-                         Return ONLY valid JSON with this shape:\n\
-                         {{\n\
-                           \"score\": number,\n\
-                           \"label\": string,\n\
-                           \"summary\": string,\n\
-                           \"whatWentWrong\": string[],\n\
-                           \"improvementSteps\": string[]\n\
-                         }}\n\
-                         Rules:\n\
-                         - score must be between 0 and {max_score}\n\
-                         - label should be one of: Excellent, Good, Developing, Needs Improvement\n\
-                         - summary must be specific and concise\n\
-                         - include at least 2 items in whatWentWrong and improvementSteps when possible.",
-                        source = content.source_note,
-                        submission = content.text.chars().take(22_000).collect::<String>(),
-                    );
-                    match generate_local_report(&llm_config, &prompt) {
-                        Ok(response) => {
-                            if let Some((parsed_score, parsed_label, parsed_feedback)) =
-                                parse_grading_response(&response, max_score)
-                            {
-                                (parsed_score, parsed_label, parsed_feedback)
-                            } else {
-                                let fallback = (max_score * 0.75).round().max(1.0);
-                                (
-                                    fallback,
-                                    "Auto-assessed".to_string(),
-                                    format!(
-                                        "{}\n\nModel response could not be fully parsed. Review and adjust.\nRaw model output:\n{}",
-                                        content.source_note,
-                                        response.trim().chars().take(1200).collect::<String>()
-                                    ),
-                                )
-                            }
-                        }
-                        Err(err) => {
-                            let fallback = (max_score * 0.75).round().max(1.0);
-                            (
-                                fallback,
-                                "Auto-assessed".to_string(),
-                                format!(
-                                    "{}\n\nAuto-scored estimate used because LLM was unavailable ({err}). Review and adjust.",
-                                    content.source_note
-                                ),
-                            )
-                        }
-                    }
-                }
-                Ok(content) => {
-                    let fallback = (max_score * 0.7).round().max(1.0);
-                    (
-                        fallback,
-                        "Needs review".to_string(),
-                        format!(
-                            "{}\n\nContent was extracted, but LLM auto-grading is unavailable. Estimated score set for teacher review.",
-                            content.source_note
-                        ),
-                    )
-                }
-                Err(err) => (
-                    0.0,
-                    "Needs review".to_string(),
-                    format!(
-                        "File '{fname}' could not be auto-processed.\nReason: {err}\nPlease review manually or upload a text/PDF/docx submission."
-                    ),
-                ),
-            }
-        } else {
-            (
-                0.0,
-                "No submission".to_string(),
-                "No file submitted. Score set to 0.".to_string(),
-            )
-        };
-
-        conn.execute(
-            "UPDATE assessment_scores SET score_value = ?1, score_label = ?2, teacher_comment = ?3, updated_at = ?4 WHERE id = ?5",
-            params![auto_score, label, comment, now(), score_id],
-        )
-        .map_err(|e| e.to_string())?;
-
-        Ok(StudentSubmission {
-            student_id,
+        let target = GradeTarget {
+            score_id,
+            student_id: student_id.clone(),
             student_name,
-            assessment_id,
-            score_value: Some(auto_score),
-            score_label: Some(label),
-            teacher_comment: Some(comment),
-            attachment_id: None,
             file_name,
             mime_type,
-            status: "scored".to_string(),
-        })
+            storage_path,
+        };
+        let job_id = create_job(
+            conn,
+            "grading",
+            Some("assessment_score"),
+            Some(&target.score_id),
+            1,
+            Some("Queued single submission grading"),
+        )?;
+        mark_job_running(conn, &job_id, Some("Grading submission"))?;
+        Ok((instructions, scoring_rubric, max_score, target, job_id))
+    })?;
+
+    let llm_config = crate::services::llm_service::LocalModelConfig {
+        provider: config_provider,
+        model: config_model,
+        available: llm_available,
+        detail: String::new(),
+    };
+    let (auto_score, label, comment, status) = evaluate_submission_for_auto_score(
+        &target,
+        &instructions,
+        &scoring_rubric,
+        max_score,
+        &llm_config,
+    );
+    state.with_conn(|conn| {
+        update_auto_submission_result(conn, &target.score_id, auto_score, &label, &comment)?;
+        update_job_progress(conn, &job_id, 1, 1, Some("Submission grading finished"))?;
+        complete_job(conn, &job_id, Some("Submission grading finished"))
+    })?;
+
+    Ok(StudentSubmission {
+        student_id: target.student_id,
+        student_name: target.student_name,
+        assessment_id,
+        score_value: auto_score,
+        score_label: Some(label),
+        teacher_comment: Some(comment),
+        attachment_id: None,
+        file_name: target.file_name,
+        mime_type: target.mime_type,
+        status,
     })
 }
 
@@ -972,7 +1035,10 @@ fn concise_unit_focus(description: Option<&str>, fallback: &str) -> String {
 
 fn parse_assessment_payload(payload: &str) -> (String, String, f64) {
     let trimmed = payload.trim();
-    if !trimmed.contains("INSTRUCTIONS:") && !trimmed.contains("RUBRIC:") && !trimmed.contains("MAX_SCORE:") {
+    if !trimmed.contains("INSTRUCTIONS:")
+        && !trimmed.contains("RUBRIC:")
+        && !trimmed.contains("MAX_SCORE:")
+    {
         return (trimmed.to_string(), String::new(), 100.0);
     }
     let instructions = trimmed
@@ -1014,15 +1080,16 @@ fn extract_submission_content_for_scoring(
         extract_image_text_with_tesseract_cli(path)?
     } else if extension == "docx"
         || extension == "doc"
-        || mime
-            .contains("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        || mime.contains("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     {
         extract_word_document_text(path, &extension)?
     } else if is_textual_submission(&extension, &mime) {
-        fs::read_to_string(path).or_else(|_| {
-            let bytes = fs::read(path)?;
-            Ok(String::from_utf8_lossy(&bytes).to_string())
-        }).map_err(|e: std::io::Error| e.to_string())?
+        fs::read_to_string(path)
+            .or_else(|_| {
+                let bytes = fs::read(path)?;
+                Ok(String::from_utf8_lossy(&bytes).to_string())
+            })
+            .map_err(|e: std::io::Error| e.to_string())?
     } else if is_audio_submission(&extension, &mime) {
         transcribe_audio_with_whisper_cli(path)?
     } else {
@@ -1061,7 +1128,8 @@ fn extract_submission_content_for_scoring(
 }
 
 fn extract_image_text_with_tesseract_cli(path: &str) -> Result<String, String> {
-    let out_dir: PathBuf = std::env::temp_dir().join(format!("edutrack-ocr-{}", uuid::Uuid::new_v4()));
+    let out_dir: PathBuf =
+        std::env::temp_dir().join(format!("edutrack-ocr-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let output_base = out_dir.join("ocr_output");
 
@@ -1079,8 +1147,8 @@ fn extract_image_text_with_tesseract_cli(path: &str) -> Result<String, String> {
         return Err(format!("image OCR failed via Tesseract: {}", stderr.trim()));
     }
     let text_path = out_dir.join("ocr_output.txt");
-    let text = fs::read_to_string(&text_path)
-        .map_err(|e| format!("failed to read OCR output: {e}"))?;
+    let text =
+        fs::read_to_string(&text_path).map_err(|e| format!("failed to read OCR output: {e}"))?;
     let _ = fs::remove_dir_all(&out_dir);
     if text.trim().is_empty() {
         return Err("image OCR returned empty text".to_string());
@@ -1191,7 +1259,8 @@ fn transcribe_audio_with_whisper_cli(path: &str) -> Result<String, String> {
         .and_then(|s| s.to_str())
         .filter(|s| !s.is_empty())
         .unwrap_or("submission");
-    let out_dir: PathBuf = std::env::temp_dir().join(format!("edutrack-whisper-{}", uuid::Uuid::new_v4()));
+    let out_dir: PathBuf =
+        std::env::temp_dir().join(format!("edutrack-whisper-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
 
     let whisper_output = run_whisper_transcription(path, &out_dir).map_err(|err| {
@@ -1199,8 +1268,12 @@ fn transcribe_audio_with_whisper_cli(path: &str) -> Result<String, String> {
         err
     })?;
     if !whisper_output.status.success() {
-        let stderr = String::from_utf8_lossy(&whisper_output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&whisper_output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&whisper_output.stderr)
+            .trim()
+            .to_string();
+        let stdout = String::from_utf8_lossy(&whisper_output.stdout)
+            .trim()
+            .to_string();
         let detail = if !stderr.is_empty() { stderr } else { stdout };
         let _ = fs::remove_dir_all(&out_dir);
         return Err(format!(
@@ -1259,8 +1332,16 @@ fn parse_grading_response(raw: &str, max_score: f64) -> Option<(f64, String, Str
         .collect::<Vec<_>>();
     let feedback = format!(
         "Summary: {summary}\n\nWhat was wrong:\n{}\n\nHow to improve:\n{}",
-        if wrong.is_empty() { "- Not specified".to_string() } else { wrong.join("\n") },
-        if improve.is_empty() { "- Not specified".to_string() } else { improve.join("\n") },
+        if wrong.is_empty() {
+            "- Not specified".to_string()
+        } else {
+            wrong.join("\n")
+        },
+        if improve.is_empty() {
+            "- Not specified".to_string()
+        } else {
+            improve.join("\n")
+        },
     );
     Some((rounded, label, feedback))
 }
@@ -1382,7 +1463,12 @@ fn normalize_install_targets(requested: Vec<String>) -> Vec<String> {
             .map(|key| key.trim().to_ascii_lowercase())
             .collect()
     };
-    keys.retain(|key| matches!(key.as_str(), "opencode" | "tesseract" | "whisper" | "pandoc"));
+    keys.retain(|key| {
+        matches!(
+            key.as_str(),
+            "opencode" | "tesseract" | "whisper" | "pandoc"
+        )
+    });
     keys.sort();
     keys.dedup();
     keys
@@ -1455,7 +1541,10 @@ fn install_opencode_windows() -> Result<Vec<String>, String> {
     if try_npm_global_install("opencode-ai", &mut notes).is_ok() {
         return Ok(notes);
     }
-    Err(format!("OpenCode install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "OpenCode install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(windows)]
@@ -1468,7 +1557,9 @@ fn install_tesseract_windows() -> Result<Vec<String>, String> {
         return Ok(notes);
     }
     if !is_windows_elevated() {
-        notes.push("Current process is not elevated; skipping Chocolatey machine install.".to_string());
+        notes.push(
+            "Current process is not elevated; skipping Chocolatey machine install.".to_string(),
+        );
         return Err(format!(
             "Tesseract install needs Administrator privileges when winget is unavailable. {} Attempts: {}",
             windows_manual_tool_hint("tesseract"),
@@ -1478,7 +1569,10 @@ fn install_tesseract_windows() -> Result<Vec<String>, String> {
     if try_choco_install("tesseract", &mut notes).is_ok() {
         return Ok(notes);
     }
-    Err(format!("Tesseract install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "Tesseract install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(windows)]
@@ -1488,7 +1582,9 @@ fn install_pandoc_windows() -> Result<Vec<String>, String> {
         return Ok(notes);
     }
     if !is_windows_elevated() {
-        notes.push("Current process is not elevated; skipping Chocolatey machine install.".to_string());
+        notes.push(
+            "Current process is not elevated; skipping Chocolatey machine install.".to_string(),
+        );
         return Err(format!(
             "Pandoc install needs Administrator privileges when winget is unavailable. {} Attempts: {}",
             windows_manual_tool_hint("pandoc"),
@@ -1498,7 +1594,10 @@ fn install_pandoc_windows() -> Result<Vec<String>, String> {
     if try_choco_install("pandoc", &mut notes).is_ok() {
         return Ok(notes);
     }
-    Err(format!("Pandoc install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "Pandoc install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(windows)]
@@ -1506,7 +1605,10 @@ fn install_whisper_windows() -> Result<Vec<String>, String> {
     let mut notes = Vec::new();
     let _ = try_winget_install("Gyan.FFmpeg", &mut notes);
     let pip_targets = [
-        ("python", vec!["-m", "pip", "install", "-U", "openai-whisper"]),
+        (
+            "python",
+            vec!["-m", "pip", "install", "-U", "openai-whisper"],
+        ),
         ("py", vec!["-m", "pip", "install", "-U", "openai-whisper"]),
         ("pip", vec!["install", "-U", "openai-whisper"]),
     ];
@@ -1517,7 +1619,10 @@ fn install_whisper_windows() -> Result<Vec<String>, String> {
         }
         notes.push(format!("{cmd} {} (failed)", args.join(" ")));
     }
-    Err(format!("Whisper install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "Whisper install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -1529,7 +1634,10 @@ fn install_opencode_macos() -> Result<Vec<String>, String> {
     if try_npm_global_install("opencode-ai", &mut notes).is_ok() {
         return Ok(notes);
     }
-    Err(format!("OpenCode install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "OpenCode install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -1547,7 +1655,10 @@ fn install_opencode_linux() -> Result<Vec<String>, String> {
     if try_npm_global_install("opencode-ai", &mut notes).is_ok() {
         return Ok(notes);
     }
-    Err(format!("OpenCode install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "OpenCode install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -1556,7 +1667,10 @@ fn install_tesseract_macos() -> Result<Vec<String>, String> {
     if try_brew_install("tesseract", &mut notes).is_ok() {
         return Ok(notes);
     }
-    Err(format!("Tesseract install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "Tesseract install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -1571,7 +1685,10 @@ fn install_tesseract_linux() -> Result<Vec<String>, String> {
     if try_pacman_install("tesseract", &mut notes).is_ok() {
         return Ok(notes);
     }
-    Err(format!("Tesseract install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "Tesseract install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -1580,7 +1697,10 @@ fn install_pandoc_macos() -> Result<Vec<String>, String> {
     if try_brew_install("pandoc", &mut notes).is_ok() {
         return Ok(notes);
     }
-    Err(format!("Pandoc install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "Pandoc install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -1595,7 +1715,10 @@ fn install_pandoc_linux() -> Result<Vec<String>, String> {
     if try_pacman_install("pandoc", &mut notes).is_ok() {
         return Ok(notes);
     }
-    Err(format!("Pandoc install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "Pandoc install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(unix)]
@@ -1611,7 +1734,10 @@ fn install_whisper_unix() -> Result<Vec<String>, String> {
     if run_pip_install_whisper(&mut notes).is_ok() {
         return Ok(notes);
     }
-    Err(format!("Whisper install failed. Attempts: {}", notes.join(" | ")))
+    Err(format!(
+        "Whisper install failed. Attempts: {}",
+        notes.join(" | ")
+    ))
 }
 
 #[cfg(windows)]
@@ -1681,10 +1807,7 @@ fn run_command(command: &str, args: &[&str]) -> Result<(), String> {
 }
 
 fn command_exists(command: &str) -> bool {
-    Command::new(command)
-        .arg("--version")
-        .output()
-        .is_ok()
+    Command::new(command).arg("--version").output().is_ok()
 }
 
 #[cfg(windows)]
@@ -1729,7 +1852,11 @@ fn sanitize_poison_proxy_env(cmd: &mut Command) {
     }
 }
 
-fn run_command_with_prefix(command: &str, args: &[&str], notes: &mut Vec<String>) -> Result<(), String> {
+fn run_command_with_prefix(
+    command: &str,
+    args: &[&str],
+    notes: &mut Vec<String>,
+) -> Result<(), String> {
     run_command(command, args)
         .map(|_| notes.push(format!("{command} {}", args.join(" "))))
         .map_err(|err| {
@@ -1749,11 +1876,7 @@ fn try_brew_install(package_name: &str, notes: &mut Vec<String>) -> Result<(), S
 
 #[cfg(unix)]
 fn try_apt_install(package_name: &str, notes: &mut Vec<String>) -> Result<(), String> {
-    run_command_with_prefix(
-        "sudo",
-        &["apt-get", "install", "-y", package_name],
-        notes,
-    )
+    run_command_with_prefix("sudo", &["apt-get", "install", "-y", package_name], notes)
 }
 
 #[cfg(unix)]
@@ -1773,8 +1896,14 @@ fn try_pacman_install(package_name: &str, notes: &mut Vec<String>) -> Result<(),
 #[cfg(unix)]
 fn run_pip_install_whisper(notes: &mut Vec<String>) -> Result<(), String> {
     let candidates = [
-        ("python", vec!["-m", "pip", "install", "-U", "openai-whisper"]),
-        ("python3", vec!["-m", "pip", "install", "-U", "openai-whisper"]),
+        (
+            "python",
+            vec!["-m", "pip", "install", "-U", "openai-whisper"],
+        ),
+        (
+            "python3",
+            vec!["-m", "pip", "install", "-U", "openai-whisper"],
+        ),
         ("py", vec!["-m", "pip", "install", "-U", "openai-whisper"]),
         ("pip", vec!["install", "-U", "openai-whisper"]),
         ("pip3", vec!["install", "-U", "openai-whisper"]),
@@ -2001,7 +2130,10 @@ fn probe_whisper_cli() -> Result<String, String> {
                 }
                 errors.push(format!("{label} exited {}", output.status));
                 if !detail.is_empty() {
-                    errors.push(format!("{label} output: {}", truncate_with_ellipsis(&detail, 220)));
+                    errors.push(format!(
+                        "{label} output: {}",
+                        truncate_with_ellipsis(&detail, 220)
+                    ));
                 }
             }
             Err(err) => errors.push(format!("{label} not available ({err})")),
@@ -2042,7 +2174,6 @@ fn looks_like_windows_cp1252_help_encoding_issue(detail: &str) -> bool {
         && lower.contains("argparse")
         && lower.contains("whisper")
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -2124,12 +2255,16 @@ mod tests {
         assert!(description.contains("MAX_SCORE:100"));
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM assessment_scores", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM assessment_scores", [], |row| {
+                row.get(0)
+            })
             .expect("count");
         assert_eq!(count, 1, "only active students should get score rows");
 
         let seeded_student: String = conn
-            .query_row("SELECT student_id FROM assessment_scores", [], |row| row.get(0))
+            .query_row("SELECT student_id FROM assessment_scores", [], |row| {
+                row.get(0)
+            })
             .expect("seeded student");
         assert_eq!(seeded_student, "st-1");
     }
@@ -2165,5 +2300,62 @@ mod tests {
         assert!((score - 87.5).abs() < f64::EPSILON);
         assert_eq!(label.as_deref(), Some("Good"));
         assert_eq!(comment.as_deref(), Some("Strong reasoning"));
+    }
+
+    #[test]
+    fn validate_submission_url_rejects_local_and_private_hosts() {
+        for url in [
+            "http://localhost/file.pdf",
+            "https://127.0.0.1/file.pdf",
+            "https://10.0.0.5/file.pdf",
+            "https://172.16.4.9/file.pdf",
+            "https://192.168.1.5/file.pdf",
+        ] {
+            assert!(
+                validate_submission_url(url).is_err(),
+                "{url} should be rejected"
+            );
+        }
+        assert!(validate_submission_url("https://example.com/submission.pdf").is_ok());
+    }
+
+    #[test]
+    fn unavailable_llm_grading_does_not_assign_estimated_score() {
+        let tmp = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&tmp).unwrap();
+        let submission = tmp.join("submission.txt");
+        std::fs::write(
+            &submission,
+            "A clear student answer with enough text to grade.",
+        )
+        .unwrap();
+        let target = GradeTarget {
+            score_id: "score-1".to_string(),
+            student_id: "student-1".to_string(),
+            student_name: "Ada".to_string(),
+            file_name: Some("submission.txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            storage_path: Some(submission.to_string_lossy().to_string()),
+        };
+        let llm_config = crate::services::llm_service::LocalModelConfig {
+            provider: "ollama".to_string(),
+            model: "missing".to_string(),
+            available: false,
+            detail: "not available".to_string(),
+        };
+
+        let (score, label, comment, status) = evaluate_submission_for_auto_score(
+            &target,
+            "Answer the prompt",
+            "Rubric",
+            100.0,
+            &llm_config,
+        );
+
+        assert_eq!(score, None);
+        assert_eq!(label, "Needs review");
+        assert_eq!(status, "pending");
+        assert!(comment.contains("No estimated score was assigned"));
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

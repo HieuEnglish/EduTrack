@@ -31,7 +31,10 @@ fn sqlite_literal_path(path: &Path) -> String {
     path.to_string_lossy().replace('\'', "''")
 }
 
-fn create_database_backup(state: &Database, file_prefix: &str) -> Result<DatabaseBackupExport, String> {
+fn create_database_backup(
+    state: &Database,
+    file_prefix: &str,
+) -> Result<DatabaseBackupExport, String> {
     let dir = export_dir(state)?;
     let created_at = Utc::now().to_rfc3339();
     let timestamp = Utc::now().format("%Y%m%d-%H%M%S-%3f").to_string();
@@ -57,7 +60,10 @@ fn create_database_backup(state: &Database, file_prefix: &str) -> Result<Databas
     })
 }
 
-fn read_setting_value_json(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>, String> {
+fn read_setting_value_json(
+    conn: &rusqlite::Connection,
+    key: &str,
+) -> Result<Option<String>, String> {
     match conn.query_row(
         "SELECT value_json FROM settings WHERE key = ?1",
         params![key],
@@ -84,26 +90,24 @@ fn write_setting_value_json(
 }
 
 fn parse_setting_bool(value_json: &str) -> Option<bool> {
-    serde_json::from_str::<bool>(value_json)
-        .ok()
-        .or_else(|| match value_json.trim().to_ascii_lowercase().as_str() {
+    serde_json::from_str::<bool>(value_json).ok().or_else(|| {
+        match value_json.trim().to_ascii_lowercase().as_str() {
             "true" => Some(true),
             "false" => Some(false),
             _ => None,
-        })
+        }
+    })
 }
 
 fn parse_setting_string(value_json: &str) -> Option<String> {
-    serde_json::from_str::<String>(value_json)
-        .ok()
-        .or_else(|| {
-            let trimmed = value_json.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
+    serde_json::from_str::<String>(value_json).ok().or_else(|| {
+        let trimmed = value_json.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 #[tauri::command]
@@ -135,8 +139,10 @@ pub async fn run_weekly_backup_if_due(
         .as_deref()
         .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
     {
-        Some(last) => now.signed_duration_since(last.with_timezone(&Utc))
-            >= Duration::days(WEEKLY_BACKUP_INTERVAL_DAYS),
+        Some(last) => {
+            now.signed_duration_since(last.with_timezone(&Utc))
+                >= Duration::days(WEEKLY_BACKUP_INTERVAL_DAYS)
+        }
         None => true,
     };
 
@@ -283,8 +289,9 @@ fn query_json(
 
 #[cfg(test)]
 mod tests {
-    use super::export_dir;
+    use super::{create_database_backup, export_dir};
     use crate::services::hierarchy::Database;
+    use rusqlite::Connection;
     use std::sync::Arc;
 
     #[test]
@@ -295,6 +302,34 @@ mod tests {
         let dir = export_dir(db.as_ref()).unwrap();
         assert!(dir.ends_with("exports"));
         assert!(dir.exists());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn database_backup_can_be_opened_and_contains_data() {
+        let tmp = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = Database::new(tmp.join("test.db"), tmp.join("data")).unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO schools (id, name, timezone, created_at, updated_at) VALUES ('school-1', 'School', 'UTC', 't', 't')",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+
+        let backup = create_database_backup(&db, "test-backup").unwrap();
+        let backup_conn = Connection::open(&backup.path).unwrap();
+        let count: i64 = backup_conn
+            .query_row(
+                "SELECT COUNT(*) FROM schools WHERE id = 'school-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
         std::fs::remove_dir_all(&tmp).ok();
     }
 }

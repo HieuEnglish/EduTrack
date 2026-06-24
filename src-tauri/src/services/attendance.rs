@@ -201,9 +201,7 @@ pub async fn update_session_completion(
     session_id: String,
     completed: bool,
 ) -> Result<(), String> {
-    state.with_conn(|conn| {
-        set_session_completion(conn, &session_id, completed)
-    })
+    state.with_conn(|conn| set_session_completion(conn, &session_id, completed))
 }
 
 fn upsert_attendance_record(
@@ -292,27 +290,19 @@ mod tests {
         )
         .expect("insert student");
 
-        let first_id = upsert_attendance_record(
-            &conn,
-            "session-1",
-            "student-1",
-            "present",
-            Some("on time"),
-        )
-        .expect("first upsert");
-        let second_id = upsert_attendance_record(
-            &conn,
-            "session-1",
-            "student-1",
-            "absent",
-            Some("sick"),
-        )
-        .expect("second upsert");
+        let first_id =
+            upsert_attendance_record(&conn, "session-1", "student-1", "present", Some("on time"))
+                .expect("first upsert");
+        let second_id =
+            upsert_attendance_record(&conn, "session-1", "student-1", "absent", Some("sick"))
+                .expect("second upsert");
 
         assert_ne!(first_id, second_id, "upsert generates fresh ids per call");
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM attendance_records", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM attendance_records", [], |row| {
+                row.get(0)
+            })
             .expect("count rows");
         assert_eq!(count, 1, "should keep a single row per (session, student)");
 

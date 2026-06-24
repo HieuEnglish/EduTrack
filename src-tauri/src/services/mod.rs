@@ -3,6 +3,7 @@ pub mod attendance;
 pub mod auth;
 pub mod exports;
 pub mod hierarchy;
+pub mod jobs;
 pub mod llm_service;
 pub mod planning;
 pub mod reports;

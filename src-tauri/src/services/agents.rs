@@ -423,8 +423,20 @@ fn engagement_insights(
     class_id: &str,
 ) -> Result<Vec<AgentInsight>, String> {
     let mut insights = Vec::new();
-    let total_sessions: i32 = conn.query_row("SELECT COUNT(*) FROM sessions WHERE class_id = ?1", params![class_id], |row| row.get(0)).map_err(|e| e.to_string())?;
-    let completed_sessions: i32 = conn.query_row("SELECT COUNT(*) FROM sessions WHERE class_id = ?1 AND completed = 1", params![class_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let total_sessions: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE class_id = ?1",
+            params![class_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let completed_sessions: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE class_id = ?1 AND completed = 1",
+            params![class_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
     if total_sessions > 0 && (completed_sessions as f64) / (total_sessions as f64) < 0.5 {
         insights.push(AgentInsight {
             id: new_id("insight"),
@@ -474,10 +486,18 @@ fn report_writer_insights(
 ) -> Result<Vec<AgentInsight>, String> {
     let mut insights = Vec::new();
     let student_count: i32 = conn
-        .query_row("SELECT COUNT(*) FROM students WHERE class_id = ?1 AND archived_at IS NULL", params![class_id], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM students WHERE class_id = ?1 AND archived_at IS NULL",
+            params![class_id],
+            |row| row.get(0),
+        )
         .map_err(|e| e.to_string())?;
     let report_count: i32 = conn
-        .query_row("SELECT COUNT(*) FROM student_reports WHERE class_id = ?1", params![class_id], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM student_reports WHERE class_id = ?1",
+            params![class_id],
+            |row| row.get(0),
+        )
         .map_err(|e| e.to_string())?;
     if student_count > 0 && report_count == 0 {
         let s = if student_count == 1 { "" } else { "s" };
@@ -500,7 +520,11 @@ fn report_writer_insights(
             agent_type: "reports".to_string(),
             severity: "warning".to_string(),
             title: format!("{}/{} students have reports", report_count, student_count),
-            body: format!("{} of {} students still need reports generated.", student_count - report_count, student_count),
+            body: format!(
+                "{} of {} students still need reports generated.",
+                student_count - report_count,
+                student_count
+            ),
             source_event_type: Some("student_reports".to_string()),
             created_at: now(),
         });
@@ -674,7 +698,21 @@ fn syllabus_extraction_insights(
         let title_tokens: Vec<&str> = cleaned
             .split_whitespace()
             .filter(|t| t.len() >= 4)
-            .filter(|t| !matches!(*t, "Unit" | "unit" | "Write" | "write" | "Essay" | "Story" | "Lesson" | "lessons" | "Module" | "Topic"))
+            .filter(|t| {
+                !matches!(
+                    *t,
+                    "Unit"
+                        | "unit"
+                        | "Write"
+                        | "write"
+                        | "Essay"
+                        | "Story"
+                        | "Lesson"
+                        | "lessons"
+                        | "Module"
+                        | "Topic"
+                )
+            })
             .collect();
         let has_evidence = if title_tokens.is_empty() {
             false
@@ -781,7 +819,11 @@ fn syllabus_extraction_insights(
     }
 
     let total: i32 = conn
-        .query_row("SELECT COUNT(*) FROM students WHERE class_id = ?1 AND archived_at IS NULL", params![class_id], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM students WHERE class_id = ?1 AND archived_at IS NULL",
+            params![class_id],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
     if unit_count >= 3 && orphan_count == 0 && blocked_count == 0 && total_lessons > 0 {
         insights.push(AgentInsight {

@@ -1,6 +1,7 @@
 use crate::services::hierarchy::{
     get_level, new_id, now, CurriculumUnit, DbState, SyllabusDocument,
 };
+use crate::services::jobs::{complete_job, create_job, fail_job, mark_job_running};
 
 use pdf_extract::extract_text;
 use rusqlite::params;
@@ -236,7 +237,7 @@ pub async fn run_advanced_curriculum_extraction(
     syllabus_id: String,
 ) -> Result<Vec<CurriculumUnit>, String> {
     use crate::services::llm_service::{extract_units_with_provider, load_llm_config};
-    state.with_conn(|conn| {
+    let (text, config, job_id) = state.with_conn(|conn| {
         let text: String = conn
             .query_row(
                 "SELECT COALESCE(coverage_notes, '') FROM syllabus_documents WHERE id = ?1",
@@ -248,17 +249,39 @@ pub async fn run_advanced_curriculum_extraction(
             return Err("no extracted syllabus text is available".to_string());
         }
         let config = load_llm_config(conn);
-        let units = match extract_units_with_provider(&config, &text, &syllabus_id) {
-            Ok(units) => units,
-            Err(err) => {
+        let job_id = create_job(
+            conn,
+            "syllabus_extraction",
+            Some("syllabus"),
+            Some(&syllabus_id),
+            1,
+            Some("Queued syllabus extraction"),
+        )?;
+        mark_job_running(conn, &job_id, Some("Extracting curriculum units"))?;
+        conn.execute(
+            "UPDATE syllabus_documents SET llm_extraction_status = 'running', updated_at = ?1 WHERE id = ?2",
+            params![crate::services::hierarchy::now(), syllabus_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok::<_, String>((text, config, job_id))
+    })?;
+
+    let units = match extract_units_with_provider(&config, &text, &syllabus_id) {
+        Ok(units) => units,
+        Err(err) => {
+            state.with_conn(|conn| {
                 conn.execute(
                     "UPDATE syllabus_documents SET llm_extraction_status = 'failed', updated_at = ?1 WHERE id = ?2",
                     params![crate::services::hierarchy::now(), syllabus_id],
                 )
                 .map_err(|e| e.to_string())?;
-                return Err(err);
-            }
-        };
+                fail_job(conn, &job_id, &err)
+            })?;
+            return Err(err);
+        }
+    };
+
+    state.with_conn(|conn| {
         conn.execute(
             "DELETE FROM curriculum_units WHERE syllabus_id = ?1",
             params![syllabus_id],
@@ -286,6 +309,12 @@ pub async fn run_advanced_curriculum_extraction(
             )
             .map_err(|e| e.to_string())?;
         }
+        conn.execute(
+            "UPDATE syllabus_documents SET llm_extraction_status = 'completed', updated_at = ?1 WHERE id = ?2",
+            params![crate::services::hierarchy::now(), syllabus_id],
+        )
+        .map_err(|e| e.to_string())?;
+        complete_job(conn, &job_id, Some("Syllabus extraction finished"))?;
         Ok(units)
     })
 }

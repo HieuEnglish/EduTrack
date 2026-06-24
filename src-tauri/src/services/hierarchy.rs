@@ -71,7 +71,7 @@ struct Migration {
     apply: MigrationFn,
 }
 
-const MIGRATIONS: [Migration; 6] = [
+const MIGRATIONS: [Migration; 7] = [
     Migration {
         version: "001_add_student_age_gender",
         apply: migration_001_add_student_age_gender,
@@ -95,6 +95,10 @@ const MIGRATIONS: [Migration; 6] = [
     Migration {
         version: "006_agent_insights_index",
         apply: migration_006_agent_insights_index,
+    },
+    Migration {
+        version: "007_jobs",
+        apply: migration_007_jobs,
     },
 ];
 
@@ -152,7 +156,12 @@ fn migration_001_add_student_age_gender(conn: &Connection) -> Result<(), String>
 }
 
 fn migration_002_add_period_minutes(conn: &Connection) -> Result<(), String> {
-    add_column_if_missing(conn, "classes", "period_minutes", "INTEGER NOT NULL DEFAULT 45")
+    add_column_if_missing(
+        conn,
+        "classes",
+        "period_minutes",
+        "INTEGER NOT NULL DEFAULT 45",
+    )
 }
 
 fn migration_003_planning_foundation(conn: &Connection) -> Result<(), String> {
@@ -315,6 +324,31 @@ fn migration_006_agent_insights_index(conn: &Connection) -> Result<(), String> {
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_agent_insights_class_created ON agent_insights(class_id, created_at DESC)",
         [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn migration_007_jobs(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            job_type TEXT NOT NULL,
+            entity_type TEXT,
+            entity_id TEXT,
+            status TEXT NOT NULL,
+            progress_current INTEGER NOT NULL DEFAULT 0,
+            progress_total INTEGER NOT NULL DEFAULT 0,
+            message TEXT,
+            error TEXT,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_jobs_status_updated ON jobs(status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_jobs_entity ON jobs(entity_type, entity_id);",
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -666,8 +700,15 @@ pub async fn delete_school_data(
     state: DbState<'_>,
     school_id: String,
 ) -> Result<DeleteSchoolDataResult, String> {
-    state.with_conn(|conn| {
-        let year_plan_lessons_deleted = conn.execute(
+    state.with_conn(|conn| delete_school_data_in_conn(conn, &school_id))
+}
+
+fn delete_school_data_in_conn(
+    conn: &Connection,
+    school_id: &str,
+) -> Result<DeleteSchoolDataResult, String> {
+    let year_plan_lessons_deleted = conn
+        .execute(
             "DELETE FROM year_plan_lessons
              WHERE year_plan_id IN (
                SELECT yp.id
@@ -678,58 +719,88 @@ pub async fn delete_school_data(
                   OR yp.level_id IN (SELECT id FROM levels WHERE school_id = ?1)
              )",
             params![school_id],
-        ).map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM attendance_records WHERE session_id IN (SELECT id FROM sessions WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1))", params![school_id])
+        )
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM attendance_records WHERE session_id IN (SELECT id FROM sessions WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1))", params![school_id])
             .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM assessment_scores WHERE assessment_id IN (SELECT id FROM assessments WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1))", params![school_id])
+    conn.execute("DELETE FROM assessment_scores WHERE assessment_id IN (SELECT id FROM assessments WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1))", params![school_id])
             .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM student_reports WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)", params![school_id])
+    conn.execute("DELETE FROM student_reports WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)", params![school_id])
             .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM agent_insights WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)", params![school_id])
+    conn.execute("DELETE FROM agent_insights WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)", params![school_id])
             .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM class_agent_assignments WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)", params![school_id])
+    conn.execute("DELETE FROM class_agent_assignments WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)", params![school_id])
             .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM class_schedule_rules WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)", params![school_id])
+    conn.execute("DELETE FROM class_schedule_rules WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)", params![school_id])
             .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM sessions WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)", params![school_id])
+    conn.execute(
+        "DELETE FROM sessions WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)",
+        params![school_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM assessments WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)",
+        params![school_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM student_characters WHERE student_id IN (SELECT id FROM students WHERE school_id = ?1)", params![school_id])
             .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM assessments WHERE class_id IN (SELECT id FROM classes WHERE school_id = ?1)", params![school_id])
-            .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM student_characters WHERE student_id IN (SELECT id FROM students WHERE school_id = ?1)", params![school_id])
-            .map_err(|e| e.to_string())?;
-        let year_plans_deleted = conn.execute(
+    let year_plans_deleted = conn
+        .execute(
             "DELETE FROM year_plans
              WHERE school_id = ?1
                 OR class_id IN (SELECT id FROM classes WHERE school_id = ?1)
                 OR level_id IN (SELECT id FROM levels WHERE school_id = ?1)",
             params![school_id],
-        ).map_err(|e| e.to_string())?;
-        let students_deleted = conn.execute("DELETE FROM students WHERE school_id = ?1", params![school_id])
+        )
+        .map_err(|e| e.to_string())?;
+    let students_deleted = conn
+        .execute(
+            "DELETE FROM students WHERE school_id = ?1",
+            params![school_id],
+        )
+        .map_err(|e| e.to_string())?;
+    let classes_deleted = conn
+        .execute(
+            "DELETE FROM classes WHERE school_id = ?1",
+            params![school_id],
+        )
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM curriculum_units WHERE syllabus_id IN (SELECT id FROM syllabus_documents WHERE school_id = ?1)", params![school_id])
             .map_err(|e| e.to_string())?;
-        let classes_deleted = conn.execute("DELETE FROM classes WHERE school_id = ?1", params![school_id])
+    conn.execute("DELETE FROM calendar_closure_days WHERE calendar_id IN (SELECT id FROM academic_calendars WHERE school_id = ?1)", params![school_id])
             .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM curriculum_units WHERE syllabus_id IN (SELECT id FROM syllabus_documents WHERE school_id = ?1)", params![school_id])
-            .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM calendar_closure_days WHERE calendar_id IN (SELECT id FROM academic_calendars WHERE school_id = ?1)", params![school_id])
-            .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM academic_calendars WHERE school_id = ?1", params![school_id])
-            .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM syllabus_documents WHERE school_id = ?1", params![school_id])
-            .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM attachments WHERE owner_type = 'school' AND owner_id = ?1", params![school_id])
-            .map_err(|e| e.to_string())?;
-        let levels_deleted = conn.execute("DELETE FROM levels WHERE school_id = ?1", params![school_id])
-            .map_err(|e| e.to_string())?;
-        let schools_deleted = conn.execute("DELETE FROM schools WHERE id = ?1", params![school_id])
-            .map_err(|e| e.to_string())?;
-        Ok(DeleteSchoolDataResult {
-            schools_deleted: schools_deleted as i32,
-            levels_deleted: levels_deleted as i32,
-            classes_deleted: classes_deleted as i32,
-            students_deleted: students_deleted as i32,
-            year_plans_deleted: year_plans_deleted as i32,
-            year_plan_lessons_deleted: year_plan_lessons_deleted as i32,
-        })
+    conn.execute(
+        "DELETE FROM academic_calendars WHERE school_id = ?1",
+        params![school_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM syllabus_documents WHERE school_id = ?1",
+        params![school_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM attachments WHERE owner_type = 'school' AND owner_id = ?1",
+        params![school_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let levels_deleted = conn
+        .execute(
+            "DELETE FROM levels WHERE school_id = ?1",
+            params![school_id],
+        )
+        .map_err(|e| e.to_string())?;
+    let schools_deleted = conn
+        .execute("DELETE FROM schools WHERE id = ?1", params![school_id])
+        .map_err(|e| e.to_string())?;
+    Ok(DeleteSchoolDataResult {
+        schools_deleted: schools_deleted as i32,
+        levels_deleted: levels_deleted as i32,
+        classes_deleted: classes_deleted as i32,
+        students_deleted: students_deleted as i32,
+        year_plans_deleted: year_plans_deleted as i32,
+        year_plan_lessons_deleted: year_plan_lessons_deleted as i32,
     })
 }
 
@@ -1017,10 +1088,7 @@ pub async fn get_teacher_profile(state: DbState<'_>) -> Result<Option<String>, S
 }
 
 #[tauri::command]
-pub async fn save_teacher_profile(
-    state: DbState<'_>,
-    profile_json: String,
-) -> Result<(), String> {
+pub async fn save_teacher_profile(state: DbState<'_>, profile_json: String) -> Result<(), String> {
     state.with_conn(|conn| {
         conn.execute(
             "INSERT INTO settings (key, value_json, updated_at) VALUES ('teacher.profile', ?1, ?2)
@@ -1040,23 +1108,50 @@ pub async fn save_image_file(
 ) -> Result<String, String> {
     let images_dir = state.uploads_dir("images");
     std::fs::create_dir_all(&images_dir).map_err(|e| e.to_string())?;
-    let safe_name = format!("{}_{}", &new_id("img")[..20], file_name.replace(['/', '\\', ':'], "_"));
+    let safe_name = format!(
+        "{}_{}",
+        &new_id("img")[..20],
+        file_name.replace(['/', '\\', ':'], "_")
+    );
     let file_path = images_dir.join(&safe_name);
     std::fs::write(&file_path, &file_data).map_err(|e| e.to_string())?;
     Ok(file_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-pub async fn read_image_file(path: String) -> Result<String, String> {
-    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let mime = match path.rsplit_once('.').unwrap_or(("", "")).1.to_ascii_lowercase().as_str() {
+pub async fn read_image_file(state: DbState<'_>, path: String) -> Result<String, String> {
+    read_image_file_from_data_dir(Path::new(&path), state.data_dir())
+}
+
+pub fn read_image_file_from_data_dir(path: &Path, data_dir: &Path) -> Result<String, String> {
+    let images_dir = data_dir.join("uploads").join("images");
+    let canonical_images_dir = images_dir
+        .canonicalize()
+        .map_err(|_| "image storage directory is not available".to_string())?;
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|_| "image file does not exist".to_string())?;
+    if !canonical_path.starts_with(&canonical_images_dir) {
+        return Err("image path is outside EduTrack image storage".to_string());
+    }
+    let data = std::fs::read(&canonical_path).map_err(|e| e.to_string())?;
+    let mime = match canonical_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
-        "svg" => "image/svg+xml",
+        "svg" => return Err("SVG image files are not supported for local previews".to_string()),
         _ => "image/png",
     };
-    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&data)))
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&data)
+    ))
 }
 
 #[cfg(test)]
@@ -1082,5 +1177,92 @@ mod tests {
         let ts = now();
         assert!(ts.contains('T'));
         assert!(ts.contains('Z') || ts.contains('+'));
+    }
+
+    #[test]
+    fn read_image_file_rejects_paths_outside_image_storage() {
+        let tmp = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let images = tmp.join("uploads").join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        let outside = tmp.join("secret.png");
+        std::fs::write(&outside, b"not really an image").unwrap();
+
+        let err = read_image_file_from_data_dir(&outside, &tmp).unwrap_err();
+        assert!(err.contains("outside EduTrack image storage"));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn read_image_file_allows_saved_png_under_image_storage() {
+        let tmp = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let images = tmp.join("uploads").join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        let saved = images.join("logo.png");
+        std::fs::write(&saved, b"png bytes").unwrap();
+
+        let value = read_image_file_from_data_dir(&saved, &tmp).unwrap();
+        assert!(value.starts_with("data:image/png;base64,"));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn delete_school_data_removes_dependent_sqlite_graph() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../db/schema.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO schools (id, name, timezone, created_at, updated_at) VALUES ('school-1', 'School', 'UTC', 't', 't');
+             INSERT INTO levels (id, school_id, name, display_order, academic_year_start, academic_year_end, region_code, timezone, created_at, updated_at)
+             VALUES ('level-1', 'school-1', 'Grade 1', 1, '2026-01-01', '2026-12-31', 'US', 'UTC', 't', 't');
+             INSERT INTO academic_calendars (id, school_id, level_id, name, academic_year_start, academic_year_end, region_code, timezone, created_at, updated_at)
+             VALUES ('cal-1', 'school-1', 'level-1', 'Calendar', '2026-01-01', '2026-12-31', 'US', 'UTC', 't', 't');
+             INSERT INTO syllabus_documents (id, school_id, level_id, title, source_file_attachment_id, coverage_notes, created_at, updated_at)
+             VALUES ('syllabus-1', 'school-1', 'level-1', 'Syllabus', 'att-syllabus', 'notes', 't', 't');
+             INSERT INTO curriculum_units (id, syllabus_id, title, recommended_sequence, estimated_lessons, estimated_weeks, created_at, updated_at)
+             VALUES ('unit-1', 'syllabus-1', 'Unit', 1, 1, 1, 't', 't');
+             INSERT INTO classes (id, school_id, level_id, name, created_at, updated_at)
+             VALUES ('class-1', 'school-1', 'level-1', 'Class', 't', 't');
+             INSERT INTO students (id, class_id, school_id, level_id, full_name, created_at, updated_at)
+             VALUES ('student-1', 'class-1', 'school-1', 'level-1', 'Student', 't', 't');
+             INSERT INTO year_plans (id, school_id, level_id, class_id, syllabus_id, calendar_id, region_code, plan_scope, generation_status, plan_snapshot_json, created_at, updated_at)
+             VALUES ('plan-1', 'school-1', 'level-1', 'class-1', 'syllabus-1', 'cal-1', 'US', 'class_specific', 'completed', '{}', 't', 't');
+             INSERT INTO year_plan_lessons (id, year_plan_id, teaching_date, weekday, sequence_number, curriculum_unit_id, lesson_title, created_at, updated_at)
+             VALUES ('lesson-1', 'plan-1', '2026-01-01', 'Thursday', 1, 'unit-1', 'Lesson', 't', 't');
+             INSERT INTO sessions (id, class_id, session_date, title, created_at, updated_at)
+             VALUES ('session-1', 'class-1', '2026-01-01', 'Session', 't', 't');
+             INSERT INTO attendance_records (id, session_id, student_id, status, recorded_at, updated_at)
+             VALUES ('attendance-1', 'session-1', 'student-1', 'present', 't', 't');
+             INSERT INTO assessments (id, class_id, title, assessment_date, created_at, updated_at)
+             VALUES ('assessment-1', 'class-1', 'Assessment', '2026-01-01', 't', 't');
+             INSERT INTO assessment_scores (id, assessment_id, student_id, created_at, updated_at)
+             VALUES ('score-1', 'assessment-1', 'student-1', 't', 't');
+             INSERT INTO student_reports (id, student_id, class_id, word_count_target, report_text, created_at, updated_at)
+             VALUES ('report-1', 'student-1', 'class-1', 100, 'Report', 't', 't');
+             INSERT INTO attachments (id, owner_type, owner_id, file_name, mime_type, size_bytes, storage_path, created_at)
+             VALUES ('attachment-1', 'school', 'school-1', 'logo.png', 'image/png', 1, 'logo.png', 't');",
+        )
+        .unwrap();
+
+        let result = delete_school_data_in_conn(&conn, "school-1").unwrap();
+        assert_eq!(result.schools_deleted, 1);
+        for table in [
+            "schools",
+            "levels",
+            "classes",
+            "students",
+            "year_plans",
+            "year_plan_lessons",
+            "attendance_records",
+            "assessment_scores",
+            "student_reports",
+            "attachments",
+        ] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} should be empty after school delete");
+        }
     }
 }

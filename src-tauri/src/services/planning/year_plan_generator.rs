@@ -1,12 +1,15 @@
 use crate::services::hierarchy::{
     get_class, get_level, new_id, now, CurriculumUnit, DbState, YearPlan, YearPlanLesson,
 };
+use crate::services::jobs::{
+    complete_job, create_job, fail_job, is_cancel_requested, mark_job_running, update_job_progress,
+};
+use crate::services::llm_service::{generate_local_report, load_llm_config};
 use crate::services::planning::calendar_service::{
     closure_dates, parse_date, teachable_dates_between, weekday_label,
 };
 use crate::services::planning::scheduling::class_weekday_set;
 use crate::services::syllabus_processing::load_units;
-use crate::services::llm_service::{generate_local_report, load_llm_config};
 use chrono::Datelike;
 use regex::Regex;
 use rusqlite::params;
@@ -53,7 +56,8 @@ struct DetailedPlanGenerationGateState {
     last_started_at: Option<Instant>,
 }
 
-static DETAILED_PLAN_GENERATION_GATE: OnceLock<Mutex<DetailedPlanGenerationGateState>> = OnceLock::new();
+static DETAILED_PLAN_GENERATION_GATE: OnceLock<Mutex<DetailedPlanGenerationGateState>> =
+    OnceLock::new();
 
 struct DetailedPlanGenerationPermit<'a> {
     gate: &'a Mutex<DetailedPlanGenerationGateState>,
@@ -68,7 +72,8 @@ impl Drop for DetailedPlanGenerationPermit<'_> {
 }
 
 fn generation_gate() -> &'static Mutex<DetailedPlanGenerationGateState> {
-    DETAILED_PLAN_GENERATION_GATE.get_or_init(|| Mutex::new(DetailedPlanGenerationGateState::default()))
+    DETAILED_PLAN_GENERATION_GATE
+        .get_or_init(|| Mutex::new(DetailedPlanGenerationGateState::default()))
 }
 
 fn acquire_detailed_plan_generation_permit(
@@ -79,7 +84,9 @@ fn acquire_detailed_plan_generation_permit(
 
     loop {
         let wait_for = {
-            let mut state = gate.lock().map_err(|_| "AI generation gate lock poisoned".to_string())?;
+            let mut state = gate
+                .lock()
+                .map_err(|_| "AI generation gate lock poisoned".to_string())?;
             if state.in_flight {
                 Some(Duration::from_millis(250))
             } else if let Some(last_started_at) = state.last_started_at {
@@ -269,18 +276,8 @@ fn allocate_lessons_per_unit(
         }
     }
 
-    distribute_remaining_slots(
-        &required_indices,
-        requested,
-        &mut allocated,
-        &mut remaining,
-    );
-    distribute_remaining_slots(
-        &optional_indices,
-        requested,
-        &mut allocated,
-        &mut remaining,
-    );
+    distribute_remaining_slots(&required_indices, requested, &mut allocated, &mut remaining);
+    distribute_remaining_slots(&optional_indices, requested, &mut allocated, &mut remaining);
 
     if remaining > 0 {
         let all_indices: Vec<usize> = (0..units.len()).collect();
@@ -744,7 +741,6 @@ pub async fn generate_year_plan(
     })
 }
 
-
 fn generate_sub_topics(description: &Option<String>, count: usize) -> Vec<String> {
     if count <= 1 {
         return vec![];
@@ -755,11 +751,7 @@ fn generate_sub_topics(description: &Option<String>, count: usize) -> Vec<String
             let cleaned = line
                 .trim()
                 .trim_start_matches(|c: char| {
-                    c == '-'
-                        || c == '*'
-                        || c == '\u{2022}'
-                        || c == '\u{2013}'
-                        || c == '\u{2014}'
+                    c == '-' || c == '*' || c == '\u{2022}' || c == '\u{2013}' || c == '\u{2014}'
                 })
                 .trim();
             if cleaned.len() >= 8 {
@@ -800,10 +792,17 @@ fn generate_sub_topics(description: &Option<String>, count: usize) -> Vec<String
             })
             .collect();
     }
-    (1..=count).map(|i| format!("Lesson {i} of {count}")).collect()
+    (1..=count)
+        .map(|i| format!("Lesson {i} of {count}"))
+        .collect()
 }
 
-fn generate_schedule_note(unit_title: &str, description: &Option<String>, part: usize, total: usize) -> String {
+fn generate_schedule_note(
+    unit_title: &str,
+    description: &Option<String>,
+    part: usize,
+    total: usize,
+) -> String {
     let focus = description
         .as_deref()
         .map(|value| value.chars().take(120).collect::<String>())
@@ -943,28 +942,59 @@ pub async fn generate_detailed_lesson_plans(
     use_llm: Option<bool>,
 ) -> Result<Vec<YearPlanLesson>, String> {
     let regenerate = regenerate_existing.unwrap_or(false);
-    let context = context_notes.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(|s| s.to_string());
-    let template = template_content.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(|s| s.to_string());
+    let context = context_notes
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|s| s.to_string());
+    let template = template_content
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|s| s.to_string());
     if !use_llm.unwrap_or(true) {
         return Err("AI detailed planning is required and cannot be disabled.".to_string());
     }
 
-    let (class, llm_config, plan_id, preloads) = {
+    let (class, llm_config, plan_id, preloads, job_id) = {
         state.with_conn(|conn| {
             let class = get_class(conn, &class_id).map_err(|e| e.to_string())?;
             let llm_config = load_llm_config(conn);
-            let plan_id = class.year_plan_id.clone()
+            let plan_id = class
+                .year_plan_id
+                .clone()
                 .ok_or_else(|| "No year plan linked to this class".to_string())?;
             let lessons = load_lessons(conn, &plan_id)?;
             let preloads = build_lesson_preloads(conn, &lessons, &plan_id, regenerate)?;
-            Ok::<_, String>((class, llm_config, plan_id, preloads))
+            let total = preloads
+                .iter()
+                .filter(|preload| !preload.is_buffer && (regenerate || !preload.has_existing_plan))
+                .count() as i32;
+            let job_id = create_job(
+                conn,
+                "lesson_plan_generation",
+                Some("class"),
+                Some(&class_id),
+                total,
+                Some("Queued detailed lesson plan generation"),
+            )?;
+            mark_job_running(conn, &job_id, Some("Generating detailed lesson plans"))?;
+            Ok::<_, String>((class, llm_config, plan_id, preloads, job_id))
         })?
     };
 
     let mut results: Vec<(String, String)> = Vec::new();
+    let total = preloads
+        .iter()
+        .filter(|preload| !preload.is_buffer && (regenerate || !preload.has_existing_plan))
+        .count() as i32;
     for preload in preloads {
         if preload.is_buffer || (preload.has_existing_plan && !regenerate) {
             continue;
+        }
+        if state.with_conn(|conn| is_cancel_requested(conn, &job_id))? {
+            state.with_conn(|conn| fail_job(conn, &job_id, "lesson plan generation cancelled"))?;
+            return Err("lesson plan generation cancelled".to_string());
         }
         let _permit = acquire_detailed_plan_generation_permit(&llm_config)?;
         let description = preload
@@ -991,13 +1021,24 @@ pub async fn generate_detailed_lesson_plans(
             template.as_deref(),
         )
         .map_err(|err| {
-            format!(
+            let message = format!(
                 "AI lesson-plan generation failed for '{}': {}",
                 preload.lesson_title,
                 sanitize_provider_error(&err)
-            )
+            );
+            let _ = state.with_conn(|conn| fail_job(conn, &job_id, &message));
+            message
         })?;
         results.push((preload.lesson_id.clone(), objective));
+        state.with_conn(|conn| {
+            update_job_progress(
+                conn,
+                &job_id,
+                results.len() as i32,
+                total,
+                Some(&format!("Generated {}", preload.lesson_title)),
+            )
+        })?;
     }
 
     let timestamp = now();
@@ -1012,6 +1053,7 @@ pub async fn generate_detailed_lesson_plans(
             )
             .map_err(|e| e.to_string())?;
         }
+        complete_job(conn, &job_id, Some("Detailed lesson plan generation finished"))?;
         load_lessons(conn, &plan_id)
     })
 }
@@ -1025,21 +1067,41 @@ pub async fn generate_detailed_lesson_plan_for_lesson(
     template_content: Option<String>,
     generate_for_flex_day_activities: Option<bool>,
 ) -> Result<YearPlanLesson, String> {
-    let context = context_notes.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(|s| s.to_string());
-    let template = template_content.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(|s| s.to_string());
+    let context = context_notes
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|s| s.to_string());
+    let template = template_content
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|s| s.to_string());
     let flex_mode = generate_for_flex_day_activities.unwrap_or(false);
 
-    let (class, llm_config, lesson) = {
+    let (class, llm_config, lesson, job_id) = {
         state.with_conn(|conn| {
             let class = get_class(conn, &class_id).map_err(|e| e.to_string())?;
             let llm_config = load_llm_config(conn);
-            let plan_id = class.year_plan_id.clone()
+            let plan_id = class
+                .year_plan_id
+                .clone()
                 .ok_or_else(|| "No year plan linked to this class".to_string())?;
             let lessons = load_lessons(conn, &plan_id)?;
-            let lesson = lessons.into_iter()
+            let lesson = lessons
+                .into_iter()
                 .find(|l| l.id == lesson_id)
                 .ok_or_else(|| "Lesson not found".to_string())?;
-            Ok::<_, String>((class, llm_config, lesson))
+            let job_id = create_job(
+                conn,
+                "lesson_plan_generation",
+                Some("lesson"),
+                Some(&lesson_id),
+                1,
+                Some("Queued detailed lesson plan generation"),
+            )?;
+            mark_job_running(conn, &job_id, Some("Generating detailed lesson plan"))?;
+            Ok::<_, String>((class, llm_config, lesson, job_id))
         })?
     };
 
@@ -1088,11 +1150,13 @@ pub async fn generate_detailed_lesson_plan_for_lesson(
         template.as_deref(),
     )
     .map_err(|err| {
-        format!(
+        let message = format!(
             "AI lesson-plan generation failed for '{}': {}",
             lesson.lesson_title,
             sanitize_provider_error(&err)
-        )
+        );
+        let _ = state.with_conn(|conn| fail_job(conn, &job_id, &message));
+        message
     })?;
 
     let is_detailed = serde_json::from_str::<serde_json::Value>(&objective)
@@ -1105,6 +1169,8 @@ pub async fn generate_detailed_lesson_plan_for_lesson(
             params![objective, is_detailed, timestamp, lesson.id],
         )
         .map_err(|e| e.to_string())?;
+        update_job_progress(conn, &job_id, 1, 1, Some("Detailed lesson plan generated"))?;
+        complete_job(conn, &job_id, Some("Detailed lesson plan generated"))?;
         let plan_id = class.year_plan_id.ok_or_else(|| "No year plan linked".to_string())?;
         load_lessons(conn, &plan_id)
             .map(|mut lessons| lessons.remove(lessons.iter().position(|l| l.id == lesson_id).unwrap_or(0)))
@@ -1196,15 +1262,25 @@ fn build_lesson_preloads(
             });
             continue;
         }
-        let unit_id = lesson.curriculum_unit_id.clone()
-            .ok_or_else(|| format!("lesson '{}' is missing syllabus unit mapping", lesson.lesson_title))?;
-        let (unit_title, unit_description, unit_assessment): (String, Option<String>, Option<String>) = conn
+        let unit_id = lesson.curriculum_unit_id.clone().ok_or_else(|| {
+            format!(
+                "lesson '{}' is missing syllabus unit mapping",
+                lesson.lesson_title
+            )
+        })?;
+        let (unit_title, unit_description, unit_assessment): (
+            String,
+            Option<String>,
+            Option<String>,
+        ) = conn
             .query_row(
                 "SELECT title, description, assessment_hint FROM curriculum_units WHERE id = ?1",
                 params![unit_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .map_err(|_| "could not load syllabus unit details for one or more scheduled lessons".to_string())?;
+            .map_err(|_| {
+                "could not load syllabus unit details for one or more scheduled lessons".to_string()
+            })?;
 
         let unit_indices: Vec<usize> = lessons
             .iter()
@@ -1386,11 +1462,11 @@ fn should_use_fallback_plan(errors: &[String]) -> bool {
 
 fn allow_fallback_detailed_plans() -> bool {
     let Ok(value) = std::env::var("EDUTRACK_ALLOW_FALLBACK_DETAILED_PLANS") else {
-        return true;
+        return false;
     };
-    !matches!(
+    matches!(
         value.trim().to_ascii_lowercase().as_str(),
-        "0" | "false" | "no" | "off"
+        "1" | "true" | "yes" | "on"
     )
 }
 
@@ -1430,7 +1506,9 @@ fn build_fallback_detailed_plan(
     let model_minutes = (period_minutes as f32 * 0.25).round() as i32;
     let guided_minutes = (period_minutes as f32 * 0.25).round() as i32;
     let independent_minutes = (period_minutes as f32 * 0.25).round() as i32;
-    let closure_minutes = (period_minutes - hook_minutes - model_minutes - guided_minutes - independent_minutes).max(5);
+    let closure_minutes =
+        (period_minutes - hook_minutes - model_minutes - guided_minutes - independent_minutes)
+            .max(5);
 
     serde_json::json!({
         "v": "1",
@@ -1667,9 +1745,7 @@ fn extract_fenced_json_candidates(raw: &str) -> Vec<String> {
 
 fn strip_disallowed_control_chars(text: &str) -> String {
     text.chars()
-        .filter(|c| {
-            !c.is_control() || matches!(c, '\n' | '\r' | '\t')
-        })
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
         .collect()
 }
 
@@ -1783,7 +1859,8 @@ fn quote_unquoted_json_keys(text: &str) -> String {
 fn sanitize_provider_error(message: &str) -> String {
     let csi_re = Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").expect("valid ansi-csi regex");
     let osc_re = Regex::new(r"\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)").expect("valid ansi-osc regex");
-    let vt_fragment_re = Regex::new(r"\[\?[0-9;]*[A-Za-z]|\[[0-9;]*[A-Za-z]|\[K").expect("valid vt-fragment regex");
+    let vt_fragment_re =
+        Regex::new(r"\[\?[0-9;]*[A-Za-z]|\[[0-9;]*[A-Za-z]|\[K").expect("valid vt-fragment regex");
     let mut cleaned = csi_re.replace_all(message, "").to_string();
     cleaned = osc_re.replace_all(&cleaned, "").to_string();
     cleaned = vt_fragment_re.replace_all(&cleaned, " ").to_string();
@@ -1791,10 +1868,7 @@ fn sanitize_provider_error(message: &str) -> String {
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
         .collect();
-    let mut compact = cleaned
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let mut compact = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let lower = compact.to_ascii_lowercase();
     if let Some(idx) = lower.find("error: 429") {
         compact = compact[idx..].to_string();
@@ -1882,7 +1956,11 @@ fn normalize_detailed_plan_value(value: &mut serde_json::Value) {
             &snapshot,
             &[
                 &["assessment"],
-                &["backwardDesign", "stage2AssessmentEvidence", "assessmentSummary"],
+                &[
+                    "backwardDesign",
+                    "stage2AssessmentEvidence",
+                    "assessmentSummary",
+                ],
                 &["backwardDesign", "stage2AssessmentEvidence", "formative"],
             ],
         ),
@@ -1898,7 +1976,11 @@ fn normalize_detailed_plan_value(value: &mut serde_json::Value) {
             &snapshot,
             &[
                 &["performanceTask"],
-                &["backwardDesign", "stage2AssessmentEvidence", "performanceTask"],
+                &[
+                    "backwardDesign",
+                    "stage2AssessmentEvidence",
+                    "performanceTask",
+                ],
             ],
         ),
         &format!(
@@ -1967,7 +2049,11 @@ fn normalize_detailed_plan_value(value: &mut serde_json::Value) {
         &snapshot,
         &[
             &["knowledge"],
-            &["backwardDesign", "stage1DesiredResults", "knowledgeAndSkills"],
+            &[
+                "backwardDesign",
+                "stage1DesiredResults",
+                "knowledgeAndSkills",
+            ],
         ],
         &format!(
             "Core concepts and examples for {} in {}.",
@@ -1980,7 +2066,11 @@ fn normalize_detailed_plan_value(value: &mut serde_json::Value) {
         &snapshot,
         &[
             &["skills"],
-            &["backwardDesign", "stage1DesiredResults", "knowledgeAndSkills"],
+            &[
+                "backwardDesign",
+                "stage1DesiredResults",
+                "knowledgeAndSkills",
+            ],
         ],
         &format!(
             "Apply {} and explain reasoning with lesson evidence.",
@@ -2043,8 +2133,8 @@ fn lesson_context_from_title(lesson_title: &str) -> (String, String, Vec<String>
     let mut keywords: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let stop_words = [
-        "unit", "lesson", "the", "and", "for", "with", "from", "into", "about", "class", "students",
-        "student", "core", "part", "day", "week", "month", "year",
+        "unit", "lesson", "the", "and", "for", "with", "from", "into", "about", "class",
+        "students", "student", "core", "part", "day", "week", "month", "year",
     ];
     let cleaned = format!("{unit} {topic}");
     for token in cleaned
@@ -2076,12 +2166,24 @@ fn replace_generic_plan_placeholders(
     keyword_terms: &[String],
 ) {
     let generic_string_replacements: [(&str, &str); 6] = [
-        ("objective", "Students will make measurable progress in this lesson"),
+        (
+            "objective",
+            "Students will make measurable progress in this lesson",
+        ),
         ("transferGoal", "Apply the lesson strategy independently."),
-        ("enduringUnderstanding", "Strong understanding is built through evidence and reflection."),
+        (
+            "enduringUnderstanding",
+            "Strong understanding is built through evidence and reflection.",
+        ),
         ("assessment", "Teacher observation and exit ticket."),
-        ("performanceTask", "Complete the core lesson task and justify thinking with evidence."),
-        ("differentiation", "Use supports and extensions based on readiness."),
+        (
+            "performanceTask",
+            "Complete the core lesson task and justify thinking with evidence.",
+        ),
+        (
+            "differentiation",
+            "Use supports and extensions based on readiness.",
+        ),
     ];
 
     for (key, generic) in generic_string_replacements {
@@ -2105,11 +2207,31 @@ fn replace_generic_plan_placeholders(
     }
 
     let array_generic_replacements: [(&str, &str, String); 5] = [
-        ("essentialQuestions", "What strategy helps me succeed in this lesson?", format!("How can I apply {topic} accurately and explain why it works?")),
-        ("knowledge", "Key lesson concepts and examples.", format!("Key concepts and examples for {topic} in {unit}.")),
-        ("skills", "Apply the target strategy and explain reasoning.", format!("Apply {topic} and explain reasoning with evidence.")),
-        ("successCriteria", "I can complete the task with accurate evidence.", format!("I can complete a {topic} task and justify my answer with accurate evidence.")),
-        ("materials", "Lesson materials and student notes.", format!("Materials and note-taking tools needed for {topic}.")),
+        (
+            "essentialQuestions",
+            "What strategy helps me succeed in this lesson?",
+            format!("How can I apply {topic} accurately and explain why it works?"),
+        ),
+        (
+            "knowledge",
+            "Key lesson concepts and examples.",
+            format!("Key concepts and examples for {topic} in {unit}."),
+        ),
+        (
+            "skills",
+            "Apply the target strategy and explain reasoning.",
+            format!("Apply {topic} and explain reasoning with evidence."),
+        ),
+        (
+            "successCriteria",
+            "I can complete the task with accurate evidence.",
+            format!("I can complete a {topic} task and justify my answer with accurate evidence."),
+        ),
+        (
+            "materials",
+            "Lesson materials and student notes.",
+            format!("Materials and note-taking tools needed for {topic}."),
+        ),
     ];
     for (key, generic, replacement) in array_generic_replacements {
         let Some(items) = value.get_mut(key).and_then(|v| v.as_array_mut()) else {
@@ -2246,12 +2368,14 @@ fn ensure_string_array(
         })
         .filter(|items| !items.is_empty());
     if let Some(items) = existing {
-        value[key] = serde_json::Value::Array(items.into_iter().map(serde_json::Value::String).collect());
+        value[key] =
+            serde_json::Value::Array(items.into_iter().map(serde_json::Value::String).collect());
         return;
     }
     let source = first_non_empty_string_array(snapshot, source_paths)
         .unwrap_or_else(|| vec![default_item.to_string()]);
-    value[key] = serde_json::Value::Array(source.into_iter().map(serde_json::Value::String).collect());
+    value[key] =
+        serde_json::Value::Array(source.into_iter().map(serde_json::Value::String).collect());
 }
 
 fn ensure_lesson_flow(value: &mut serde_json::Value, snapshot: &serde_json::Value) {
@@ -2277,8 +2401,15 @@ fn ensure_lesson_flow(value: &mut serde_json::Value, snapshot: &serde_json::Valu
             ("closureReflection", "Closure/Reflection"),
         ];
         for (key, phase) in map {
-            if let Some(desc) = stage3.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
-                flow.push(serde_json::json!({"phase": phase, "time": "8 min", "description": desc}));
+            if let Some(desc) = stage3
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                flow.push(
+                    serde_json::json!({"phase": phase, "time": "8 min", "description": desc}),
+                );
             }
         }
     }
@@ -2293,7 +2424,11 @@ fn ensure_lesson_flow(value: &mut serde_json::Value, snapshot: &serde_json::Valu
 }
 
 fn ensure_backward_design_shape(value: &mut serde_json::Value) {
-    if !value.get("backwardDesign").map(|v| v.is_object()).unwrap_or(false) {
+    if !value
+        .get("backwardDesign")
+        .map(|v| v.is_object())
+        .unwrap_or(false)
+    {
         value["backwardDesign"] = serde_json::json!({});
     }
     let backward = value
@@ -2332,14 +2467,91 @@ fn ensure_backward_design_shape(value: &mut serde_json::Value) {
 
 fn normalize_stage3_learning_plan_keys(value: &mut serde_json::Value) {
     let canonical: &[(&str, &[&str])] = &[
-        ("hookWarmUp", &["hookWarmUp", "Hook/Warm-Up", "hook_warm_up", "hook warm up", "hookwarmup", "warmup", "warm-up"]),
-        ("activatePriorKnowledge", &["activatePriorKnowledge", "Activate Prior Knowledge", "activate_prior_knowledge", "activate prior knowledge", "prior knowledge", "prior_knowledge"]),
-        ("explicitTeachingModeling", &["explicitTeachingModeling", "Explicit Teaching/Modeling", "explicit_teaching_modeling", "explicit teaching/modeling", "explicit teaching and modeling", "direct instruction", "direct_instruction"]),
-        ("guidedPractice", &["guidedPractice", "Guided Practice", "guided_practice", "guided practice"]),
-        ("collaborativePractice", &["collaborativePractice", "Collaborative Practice", "collaborative_practice", "collaborative practice", "group work", "group_work"]),
-        ("independentPractice", &["independentPractice", "Independent Practice", "independent_practice", "independent practice"]),
-        ("closureReflection", &["closureReflection", "Closure/Reflection", "closure_reflection", "closure/reflection", "closure", "closing"]),
-        ("exitTicket", &["exitTicket", "Exit Ticket", "exit_ticket", "exit ticket", "exit"]),
+        (
+            "hookWarmUp",
+            &[
+                "hookWarmUp",
+                "Hook/Warm-Up",
+                "hook_warm_up",
+                "hook warm up",
+                "hookwarmup",
+                "warmup",
+                "warm-up",
+            ],
+        ),
+        (
+            "activatePriorKnowledge",
+            &[
+                "activatePriorKnowledge",
+                "Activate Prior Knowledge",
+                "activate_prior_knowledge",
+                "activate prior knowledge",
+                "prior knowledge",
+                "prior_knowledge",
+            ],
+        ),
+        (
+            "explicitTeachingModeling",
+            &[
+                "explicitTeachingModeling",
+                "Explicit Teaching/Modeling",
+                "explicit_teaching_modeling",
+                "explicit teaching/modeling",
+                "explicit teaching and modeling",
+                "direct instruction",
+                "direct_instruction",
+            ],
+        ),
+        (
+            "guidedPractice",
+            &[
+                "guidedPractice",
+                "Guided Practice",
+                "guided_practice",
+                "guided practice",
+            ],
+        ),
+        (
+            "collaborativePractice",
+            &[
+                "collaborativePractice",
+                "Collaborative Practice",
+                "collaborative_practice",
+                "collaborative practice",
+                "group work",
+                "group_work",
+            ],
+        ),
+        (
+            "independentPractice",
+            &[
+                "independentPractice",
+                "Independent Practice",
+                "independent_practice",
+                "independent practice",
+            ],
+        ),
+        (
+            "closureReflection",
+            &[
+                "closureReflection",
+                "Closure/Reflection",
+                "closure_reflection",
+                "closure/reflection",
+                "closure",
+                "closing",
+            ],
+        ),
+        (
+            "exitTicket",
+            &[
+                "exitTicket",
+                "Exit Ticket",
+                "exit_ticket",
+                "exit ticket",
+                "exit",
+            ],
+        ),
     ];
 
     let Some(stage3) = value
@@ -2351,14 +2563,38 @@ fn normalize_stage3_learning_plan_keys(value: &mut serde_json::Value) {
     };
 
     let defaults: &[(&str, &str)] = &[
-        ("hookWarmUp", "Warm-up activity to engage students and connect to prior knowledge."),
-        ("activatePriorKnowledge", "Review and connect previous learning to today's objective."),
-        ("explicitTeachingModeling", "Teacher models the target skill with clear explanation."),
-        ("guidedPractice", "Structured practice with teacher support and feedback."),
-        ("collaborativePractice", "Peer collaboration to deepen understanding through discussion."),
-        ("independentPractice", "Independent application of the lesson objective."),
-        ("closureReflection", "Summarize key takeaways and reflect on learning."),
-        ("exitTicket", "Formative check to assess understanding of the lesson goal."),
+        (
+            "hookWarmUp",
+            "Warm-up activity to engage students and connect to prior knowledge.",
+        ),
+        (
+            "activatePriorKnowledge",
+            "Review and connect previous learning to today's objective.",
+        ),
+        (
+            "explicitTeachingModeling",
+            "Teacher models the target skill with clear explanation.",
+        ),
+        (
+            "guidedPractice",
+            "Structured practice with teacher support and feedback.",
+        ),
+        (
+            "collaborativePractice",
+            "Peer collaboration to deepen understanding through discussion.",
+        ),
+        (
+            "independentPractice",
+            "Independent application of the lesson objective.",
+        ),
+        (
+            "closureReflection",
+            "Summarize key takeaways and reflect on learning.",
+        ),
+        (
+            "exitTicket",
+            "Formative check to assess understanding of the lesson goal.",
+        ),
     ];
 
     for &(canonical_key, aliases) in canonical {
@@ -2374,8 +2610,15 @@ fn normalize_stage3_learning_plan_keys(value: &mut serde_json::Value) {
             }
         }
         if !found {
-            let default = defaults.iter().find(|&&(k, _)| k == canonical_key).map(|&(_, v)| v).unwrap_or("");
-            stage3.insert(canonical_key.to_string(), serde_json::Value::String(default.to_string()));
+            let default = defaults
+                .iter()
+                .find(|&&(k, _)| k == canonical_key)
+                .map(|&(_, v)| v)
+                .unwrap_or("");
+            stage3.insert(
+                canonical_key.to_string(),
+                serde_json::Value::String(default.to_string()),
+            );
         }
     }
 }
@@ -2393,7 +2636,13 @@ fn validate_detailed_plan_json(value: &serde_json::Value) -> Result<(), String> 
         "crossCurricular",
     ];
     for key in required_strings {
-        if value.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).is_none() {
+        if value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
             return Err(format!("missing or empty '{key}'"));
         }
     }
@@ -2412,7 +2661,12 @@ fn validate_detailed_plan_json(value: &serde_json::Value) -> Result<(), String> 
         if items.is_empty() {
             return Err(format!("array '{key}' must not be empty"));
         }
-        if items.iter().any(|item| item.as_str().map(str::trim).filter(|s| !s.is_empty()).is_none()) {
+        if items.iter().any(|item| {
+            item.as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
+        }) {
             return Err(format!("array '{key}' must contain non-empty strings"));
         }
     }
@@ -2465,16 +2719,25 @@ fn validate_detailed_plan_json(value: &serde_json::Value) -> Result<(), String> 
         .get("crossCurricularRealWorldConnections")
         .and_then(|v| v.as_array())
     else {
-        return Err("backwardDesign missing array 'crossCurricularRealWorldConnections'".to_string());
+        return Err(
+            "backwardDesign missing array 'crossCurricularRealWorldConnections'".to_string(),
+        );
     };
     if xcurr.is_empty() {
-        return Err("backwardDesign.crossCurricularRealWorldConnections must not be empty".to_string());
+        return Err(
+            "backwardDesign.crossCurricularRealWorldConnections must not be empty".to_string(),
+        );
     }
-    if xcurr
-        .iter()
-        .any(|item| item.as_str().map(str::trim).filter(|s| !s.is_empty()).is_none())
-    {
-        return Err("backwardDesign.crossCurricularRealWorldConnections must contain non-empty strings".to_string());
+    if xcurr.iter().any(|item| {
+        item.as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_none()
+    }) {
+        return Err(
+            "backwardDesign.crossCurricularRealWorldConnections must contain non-empty strings"
+                .to_string(),
+        );
     }
 
     let stage3 = backward
@@ -2519,8 +2782,14 @@ fn is_detailed_plan_json(value: Option<&str>) -> bool {
     };
     parsed.get("v").and_then(|v| v.as_str()) == Some("1")
         && parsed.get("objective").and_then(|v| v.as_str()).is_some()
-        && parsed.get("lessonFlow").and_then(|v| v.as_array()).is_some()
-        && parsed.get("backwardDesign").and_then(|v| v.as_object()).is_some()
+        && parsed
+            .get("lessonFlow")
+            .and_then(|v| v.as_array())
+            .is_some()
+        && parsed
+            .get("backwardDesign")
+            .and_then(|v| v.as_object())
+            .is_some()
 }
 
 fn load_lessons(conn: &rusqlite::Connection, plan_id: &str) -> Result<Vec<YearPlanLesson>, String> {
@@ -2716,7 +2985,9 @@ mod tests {
 
     #[test]
     fn pace_dates_balanced_unchanged() {
-        let dates: Vec<NaiveDate> = (1..=10).map(|d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap()).collect();
+        let dates: Vec<NaiveDate> = (1..=10)
+            .map(|d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap())
+            .collect();
         let result = pace_dates(&dates, Some("balanced"));
         assert_eq!(result.len(), 10);
         assert_eq!(result[0], dates[0]);
@@ -2724,14 +2995,18 @@ mod tests {
 
     #[test]
     fn pace_dates_front_loaded_unchanged() {
-        let dates: Vec<NaiveDate> = (1..=10).map(|d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap()).collect();
+        let dates: Vec<NaiveDate> = (1..=10)
+            .map(|d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap())
+            .collect();
         let result = pace_dates(&dates, Some("front_loaded"));
         assert_eq!(result, dates);
     }
 
     #[test]
     fn pace_dates_back_loaded_shifts() {
-        let dates: Vec<NaiveDate> = (1..=10).map(|d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap()).collect();
+        let dates: Vec<NaiveDate> = (1..=10)
+            .map(|d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap())
+            .collect();
         let result = pace_dates(&dates, Some("back_loaded"));
         assert_ne!(result, dates);
         assert_eq!(result.len(), 10);
@@ -2739,7 +3014,9 @@ mod tests {
 
     #[test]
     fn pace_dates_default_balanced() {
-        let dates: Vec<NaiveDate> = (1..=3).map(|d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap()).collect();
+        let dates: Vec<NaiveDate> = (1..=3)
+            .map(|d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap())
+            .collect();
         let result = pace_dates(&dates, None);
         assert_eq!(result, dates);
     }
@@ -2791,7 +3068,10 @@ mod tests {
     fn detailed_json_candidate_quotes_unquoted_keys() {
         let raw = "{objective:\"Focus\",lessonFlow:[]}";
         let parsed = parse_detailed_json_candidate(raw).expect("should quote keys");
-        assert_eq!(parsed.get("objective").and_then(|v| v.as_str()), Some("Focus"));
+        assert_eq!(
+            parsed.get("objective").and_then(|v| v.as_str()),
+            Some("Focus")
+        );
         assert!(parsed.get("lessonFlow").is_some());
     }
 
@@ -2804,7 +3084,8 @@ mod tests {
         let line3 = json!({ "response": &plan[split..], "done": true }).to_string();
         let raw = format!("{line1}\n{line2}\n{line3}");
 
-        let parsed = parse_and_validate_detailed_plan_value(&raw).expect("should parse streamed JSON fragments");
+        let parsed = parse_and_validate_detailed_plan_value(&raw)
+            .expect("should parse streamed JSON fragments");
         assert_eq!(parsed.get("v").and_then(|v| v.as_str()), Some("1"));
         assert!(parsed.get("backwardDesign").is_some());
     }
@@ -2812,10 +3093,9 @@ mod tests {
     #[test]
     fn detailed_plan_parser_handles_reasoning_before_json() {
         let plan = valid_detailed_plan_json();
-        let raw = format!(
-            "Reasoning draft: {{not_json}}\nFinal answer below:\n{plan}"
-        );
-        let parsed = parse_and_validate_detailed_plan_value(&raw).expect("should extract final balanced JSON object");
+        let raw = format!("Reasoning draft: {{not_json}}\nFinal answer below:\n{plan}");
+        let parsed = parse_and_validate_detailed_plan_value(&raw)
+            .expect("should extract final balanced JSON object");
         assert_eq!(parsed.get("v").and_then(|v| v.as_str()), Some("1"));
     }
 
@@ -2825,7 +3105,9 @@ mod tests {
             serde_json::from_str(&valid_detailed_plan_json()).expect("valid base JSON");
         value["objective"] = serde_json::Value::String(String::new());
         value["backwardDesign"]["stage1DesiredResults"]["understanding"] =
-            serde_json::Value::String("Writers build suspense through purposeful craft moves.".to_string());
+            serde_json::Value::String(
+                "Writers build suspense through purposeful craft moves.".to_string(),
+            );
         normalize_detailed_plan_value(&mut value);
         validate_detailed_plan_json(&value).expect("normalized value should validate");
         assert_eq!(
@@ -2893,10 +3175,9 @@ mod tests {
             detail: String::new(),
         };
         assert!(cloud_generation_cooldown(&cloud_cfg) >= Duration::from_millis(1_000));
-        assert_eq!(cloud_generation_cooldown(&local_cfg), Duration::from_millis(0));
+        assert_eq!(
+            cloud_generation_cooldown(&local_cfg),
+            Duration::from_millis(0)
+        );
     }
 }
-
-
-
-

@@ -1,4 +1,5 @@
 use crate::services::hierarchy::{new_id, now, CurriculumUnit, DbState};
+use crate::services::jobs::{complete_job, create_job, fail_job, mark_job_running};
 use crate::services::syllabus_processing::load_units;
 use regex::Regex;
 use rusqlite::params;
@@ -93,10 +94,8 @@ fn extract_semester_timeline_units(text: &str) -> Vec<(String, String)> {
     let continuation_suffix =
         Regex::new(r"(?i)\s*\((?:continuation|continued)\)\s*$").expect("valid continuation regex");
 
-    let section_header = Regex::new(
-        r"^\s*(?:I{1,3}|IV|V|VI{1,3}|IX|X)\s*\..+\s*$",
-    )
-    .expect("valid section header regex");
+    let section_header = Regex::new(r"^\s*(?:I{1,3}|IV|V|VI{1,3}|IX|X)\s*\..+\s*$")
+        .expect("valid section header regex");
 
     let mut current_month = String::new();
     let mut order: Vec<String> = Vec::new();
@@ -138,7 +137,11 @@ fn extract_semester_timeline_units(text: &str) -> Vec<(String, String)> {
         let key = format!(
             "{}:{}",
             number,
-            base_title.to_ascii_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+            base_title
+                .to_ascii_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
         );
         if !buckets.contains_key(&key) {
             order.push(key.clone());
@@ -149,7 +152,11 @@ fn extract_semester_timeline_units(text: &str) -> Vec<(String, String)> {
         }
         if !current_month.is_empty() {
             let entry = buckets.get_mut(&key).expect("bucket exists");
-            if !entry.1.iter().any(|m| m.eq_ignore_ascii_case(&current_month)) {
+            if !entry
+                .1
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(&current_month))
+            {
                 entry.1.push(current_month.clone());
             }
         }
@@ -254,14 +261,16 @@ fn clean_title(title: &str) -> String {
 fn estimate_lessons(title: &str, body: &str) -> i32 {
     let re = Regex::new(r"(?i)(\d{1,2})\s+(lessons?|weeks?|wks?|sessions?)")
         .expect("valid lesson estimate regex");
-    let from_title = re.captures(title)
+    let from_title = re
+        .captures(title)
         .and_then(|caps| caps.get(1))
         .and_then(|m| m.as_str().parse::<i32>().ok())
         .filter(|&n| n <= 12);
     if let Some(count) = from_title {
         return count;
     }
-    let from_body = re.captures_iter(body)
+    let from_body = re
+        .captures_iter(body)
         .filter_map(|caps| caps.get(1))
         .filter_map(|m| m.as_str().parse::<i32>().ok())
         .filter(|&n| n <= 12)
@@ -370,7 +379,8 @@ fn build_curriculum_units(
         .collect();
 
     let provider_final = finalize_curriculum_units(provider_units, text, syllabus_id);
-    let heuristic_final = finalize_curriculum_units(extract_units_advanced(text, syllabus_id), text, syllabus_id);
+    let heuristic_final =
+        finalize_curriculum_units(extract_units_advanced(text, syllabus_id), text, syllabus_id);
 
     if should_prefer_heuristic_units(&provider_final, &heuristic_final, text) {
         heuristic_final
@@ -415,7 +425,10 @@ fn merge_timeline_labels(base: Option<&str>, extra: Option<&str>) -> Option<Stri
     let mut values: Vec<String> = Vec::new();
     for raw in [base, extra].into_iter().flatten() {
         for segment in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            if !values.iter().any(|existing| existing.eq_ignore_ascii_case(segment)) {
+            if !values
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(segment))
+            {
                 values.push(segment.to_string());
             }
         }
@@ -528,7 +541,8 @@ fn enrich_units_with_source_timeline(
             }
         }
         if best_score >= 2 {
-            unit.month_label = merge_timeline_labels(unit.month_label.as_deref(), best_label.as_deref());
+            unit.month_label =
+                merge_timeline_labels(unit.month_label.as_deref(), best_label.as_deref());
         }
     }
     units
@@ -558,8 +572,8 @@ pub(crate) fn normalize_extracted_units(
         r"(?i)^(at the end of the unit|students will be able to|learning objective|success criteria)",
     )
     .expect("valid blocked-title regex");
-    let trailing_continuation =
-        Regex::new(r"(?i)\s*\((?:continuation|continued)\)\s*$").expect("valid continuation suffix regex");
+    let trailing_continuation = Regex::new(r"(?i)\s*\((?:continuation|continued)\)\s*$")
+        .expect("valid continuation suffix regex");
     let mut merged: Vec<CurriculumUnit> = Vec::new();
     let mut key_to_index: HashMap<String, usize> = HashMap::new();
 
@@ -591,9 +605,17 @@ pub(crate) fn normalize_extracted_units(
 
         if let Some(existing_idx) = key_to_index.get(&merge_key).copied() {
             let existing = merged.get_mut(existing_idx).expect("valid merged index");
-            if let Some(desc) = unit.description.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(desc) = unit
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 let existing_desc = existing.description.clone().unwrap_or_default();
-                if !existing_desc.to_ascii_lowercase().contains(&desc.to_ascii_lowercase()) {
+                if !existing_desc
+                    .to_ascii_lowercase()
+                    .contains(&desc.to_ascii_lowercase())
+                {
                     let combined = if existing_desc.is_empty() {
                         desc.to_string()
                     } else {
@@ -604,10 +626,8 @@ pub(crate) fn normalize_extracted_units(
             }
             existing.estimated_lessons = existing.estimated_lessons.max(unit.estimated_lessons);
             existing.estimated_weeks = existing.estimated_weeks.max(unit.estimated_weeks);
-            existing.month_label = merge_timeline_labels(
-                existing.month_label.as_deref(),
-                unit.month_label.as_deref(),
-            );
+            existing.month_label =
+                merge_timeline_labels(existing.month_label.as_deref(), unit.month_label.as_deref());
             continue;
         }
 
@@ -690,8 +710,8 @@ fn is_write_variant_title(title: &str) -> bool {
 
 fn topic_core_from_title(title: &str) -> String {
     let mut value = strip_unit_prefix(title);
-    let continuation_suffix =
-        Regex::new(r"(?i)\s*\((?:continuation|continued)\)\s*$").expect("valid continuation suffix regex");
+    let continuation_suffix = Regex::new(r"(?i)\s*\((?:continuation|continued)\)\s*$")
+        .expect("valid continuation suffix regex");
     value = continuation_suffix.replace(&value, "").to_string();
     let lower = value.to_ascii_lowercase();
     let stripped = if lower.starts_with("write a ") {
@@ -747,13 +767,16 @@ fn title_has_source_evidence(title: &str, text: &str) -> bool {
     if tokens.is_empty() {
         return false;
     }
-    let hit_count = tokens.iter().filter(|token| source.contains(**token)).count();
+    let hit_count = tokens
+        .iter()
+        .filter(|token| source.contains(**token))
+        .count();
     hit_count >= 2 || (tokens.len() == 1 && hit_count == 1)
 }
 
 fn canonical_unit_key(title: &str) -> Option<(String, String)> {
-    let unit_re =
-        Regex::new(r"(?i)^\s*unit\s*(\d{1,2})\s*[:.\-]?\s*(.+?)\s*$").expect("valid canonical unit regex");
+    let unit_re = Regex::new(r"(?i)^\s*unit\s*(\d{1,2})\s*[:.\-]?\s*(.+?)\s*$")
+        .expect("valid canonical unit regex");
     let caps = unit_re.captures(title)?;
     let number = caps.get(1)?.as_str().to_string();
     let name = caps
@@ -775,7 +798,8 @@ fn detect_semester_timeline_layout(text: &str) -> bool {
         r"(?im)^\s*(January|February|March|April|May|June|July|August|September|October|November|December)(?:\s*[-–]\s*(January|February|March|April|May|June|July|August|September|October|November|December))?\s*$",
     )
     .expect("valid month layout regex");
-    let unit_line = Regex::new(r"(?im)^\s*Unit\s*\d{1,2}\s*[:.\-]?").expect("valid unit layout regex");
+    let unit_line =
+        Regex::new(r"(?im)^\s*Unit\s*\d{1,2}\s*[:.\-]?").expect("valid unit layout regex");
     let month_lines = month_line.find_iter(text).count();
     let unit_lines = unit_line.find_iter(text).count();
     month_lines >= 4 && unit_lines >= 4
@@ -1026,7 +1050,11 @@ fn extract_first_jsonl_error(raw: &str) -> Option<String> {
                 if let Some(msg) = data.get("message").and_then(|m| m.as_str()) {
                     return Some(msg.to_string());
                 }
-                if let Some(name) = value.get("error").and_then(|e| e.get("name")).and_then(|n| n.as_str()) {
+                if let Some(name) = value
+                    .get("error")
+                    .and_then(|e| e.get("name"))
+                    .and_then(|n| n.as_str())
+                {
                     return Some(name.to_string());
                 }
             }
@@ -1048,9 +1076,15 @@ fn extract_text_from_jsonl_stream(raw: &str) -> Option<String> {
         append_json_text_field(&mut combined, value.get("response"));
         append_json_text_field(&mut combined, value.get("text"));
         append_json_text_field(&mut combined, value.get("content"));
-        append_json_text_field(&mut combined, value.get("message").and_then(|v| v.get("content")));
+        append_json_text_field(
+            &mut combined,
+            value.get("message").and_then(|v| v.get("content")),
+        );
         append_json_text_field(&mut combined, value.get("part").and_then(|v| v.get("text")));
-        append_json_text_field(&mut combined, value.get("part").and_then(|v| v.get("content")));
+        append_json_text_field(
+            &mut combined,
+            value.get("part").and_then(|v| v.get("content")),
+        );
     }
     let cleaned = combined.trim();
     if cleaned.is_empty() {
@@ -1484,7 +1518,7 @@ pub async fn extract_curriculum_units(
     state: DbState<'_>,
     syllabus_id: String,
 ) -> Result<Vec<CurriculumUnit>, String> {
-    state.with_conn(|conn| {
+    let (text, config, job_id) = state.with_conn(|conn| {
         let text: String = conn
             .query_row(
                 "SELECT COALESCE(coverage_notes, '') FROM syllabus_documents WHERE id = ?1",
@@ -1502,18 +1536,35 @@ pub async fn extract_curriculum_units(
         .map_err(|e| e.to_string())?;
 
         let config = load_llm_config(conn);
-        let units = match extract_units_with_provider(&config, &text, &syllabus_id) {
-            Ok(units) => units,
-            Err(err) => {
+        let job_id = create_job(
+            conn,
+            "syllabus_extraction",
+            Some("syllabus"),
+            Some(&syllabus_id),
+            1,
+            Some("Queued curriculum extraction"),
+        )?;
+        mark_job_running(conn, &job_id, Some("Extracting curriculum units"))?;
+        Ok::<_, String>((text, config, job_id))
+    })?;
+
+    let units = match extract_units_with_provider(&config, &text, &syllabus_id) {
+        Ok(units) => units,
+        Err(err) => {
+            let message = extraction_failure_message(&config, &err);
+            state.with_conn(|conn| {
                 conn.execute(
                     "UPDATE syllabus_documents SET llm_extraction_status = 'failed', updated_at = ?1 WHERE id = ?2",
                     params![now(), syllabus_id],
                 )
                 .map_err(|e| e.to_string())?;
-                return Err(extraction_failure_message(&config, &err));
-            }
-        };
+                fail_job(conn, &job_id, &message)
+            })?;
+            return Err(message);
+        }
+    };
 
+    state.with_conn(|conn| {
         conn.execute(
             "DELETE FROM curriculum_units WHERE syllabus_id = ?1",
             params![syllabus_id],
@@ -1546,6 +1597,7 @@ pub async fn extract_curriculum_units(
             params![now(), syllabus_id],
         )
         .map_err(|e| e.to_string())?;
+        complete_job(conn, &job_id, Some("Curriculum extraction finished"))?;
         Ok(units)
     })
 }
@@ -1688,7 +1740,10 @@ mod tests {
         assert_eq!(units.len(), 6);
         assert_eq!(units[0].title, "Unit 1: Personal Narrative");
         assert_eq!(units[5].title, "Unit 4: Problem-and-Solution Essay");
-        let persuasive = units.iter().find(|u| u.title == "Unit 6: Persuasive Essay").expect("unit 6 exists");
+        let persuasive = units
+            .iter()
+            .find(|u| u.title == "Unit 6: Persuasive Essay")
+            .expect("unit 6 exists");
         let desc = persuasive.description.as_deref().unwrap_or("");
         assert!(desc.contains("December"));
         assert!(desc.contains("January"));
@@ -1699,18 +1754,48 @@ mod tests {
         let text = "Semester 1\nAugust\nUnit 1: Personal Narrative\nSeptember\nUnit 5: Description of a Process\nOctober-November\nUnit 2: News Article\nDecember\nUnit 6: Persuasive Essay\nSemester 2\nJanuary\nUnit 6: Persuasive Essay (continuation)\nFebruary\nUnit 3: Short Story\nMarch\nUnit 3: Short Story (continuation)\nApril-May\nUnit 4: Problem-and-Solution Essay";
         let now_ts = now();
         let units = vec![
-            ("Unit 6: Persuasive Essay", "Assigned timeline: January, December."),
+            (
+                "Unit 6: Persuasive Essay",
+                "Assigned timeline: January, December.",
+            ),
             ("Unit 1: Personal Narrative", "Assigned timeline: August."),
-            ("Unit 5: Description of a Process", "Assigned timeline: September."),
-            ("Unit 2: News Article", "Assigned timeline: October-November."),
+            (
+                "Unit 5: Description of a Process",
+                "Assigned timeline: September.",
+            ),
+            (
+                "Unit 2: News Article",
+                "Assigned timeline: October-November.",
+            ),
             ("Unit 3: Short Story", "Assigned timeline: February, March."),
-            ("Unit 4: Problem-and-Solution Essay", "Assigned timeline: April-May."),
-            ("Unit 1: Write a Personal Narrative", "Assigned timeline: April-May."),
-            ("Unit 2: Write a News Article", "Assigned timeline: April-May."),
-            ("Unit 3: Write a Short Story", "Assigned timeline: April-May."),
-            ("Unit 4: Write a Problem-Solution Essay", "Assigned timeline: April-May."),
-            ("Unit 5: Write a Description of a Process", "Assigned timeline: April-May."),
-            ("Unit 6: Write a Persuasive Essay", "Assigned timeline: April-May."),
+            (
+                "Unit 4: Problem-and-Solution Essay",
+                "Assigned timeline: April-May.",
+            ),
+            (
+                "Unit 1: Write a Personal Narrative",
+                "Assigned timeline: April-May.",
+            ),
+            (
+                "Unit 2: Write a News Article",
+                "Assigned timeline: April-May.",
+            ),
+            (
+                "Unit 3: Write a Short Story",
+                "Assigned timeline: April-May.",
+            ),
+            (
+                "Unit 4: Write a Problem-Solution Essay",
+                "Assigned timeline: April-May.",
+            ),
+            (
+                "Unit 5: Write a Description of a Process",
+                "Assigned timeline: April-May.",
+            ),
+            (
+                "Unit 6: Write a Persuasive Essay",
+                "Assigned timeline: April-May.",
+            ),
             ("Unit 7: Literary Analysis", "Assigned timeline: April-May."),
         ]
         .into_iter()
@@ -1735,10 +1820,14 @@ mod tests {
 
         let pruned = prune_derivative_and_unsupported_units(units, text, true);
         assert_eq!(pruned.len(), 6);
-        assert!(pruned.iter().any(|u| u.title == "Unit 1: Personal Narrative"));
+        assert!(pruned
+            .iter()
+            .any(|u| u.title == "Unit 1: Personal Narrative"));
         assert!(pruned.iter().any(|u| u.title == "Unit 6: Persuasive Essay"));
         assert!(!pruned.iter().any(|u| u.title.contains("Write a")));
-        assert!(!pruned.iter().any(|u| u.title == "Unit 7: Literary Analysis"));
+        assert!(!pruned
+            .iter()
+            .any(|u| u.title == "Unit 7: Literary Analysis"));
     }
 
     #[test]
@@ -1791,15 +1880,24 @@ mod tests {
 
     #[test]
     fn estimate_lessons_with_month_name() {
-        let lessons = estimate_lessons("Unit 3 â€“ The Hero Within (February)", "Content covering hero archetypes.");
+        let lessons = estimate_lessons(
+            "Unit 3 â€“ The Hero Within (February)",
+            "Content covering hero archetypes.",
+        );
         assert_eq!(lessons, 4);
     }
 
     #[test]
     fn infer_assessment_from_text() {
-        assert!(infer_assessment_hint("final exam").unwrap().contains("test"));
-        assert!(infer_assessment_hint("group project").unwrap().contains("Project"));
-        assert!(infer_assessment_hint("weekly quiz").unwrap().contains("quiz"));
+        assert!(infer_assessment_hint("final exam")
+            .unwrap()
+            .contains("test"));
+        assert!(infer_assessment_hint("group project")
+            .unwrap()
+            .contains("Project"));
+        assert!(infer_assessment_hint("weekly quiz")
+            .unwrap()
+            .contains("quiz"));
     }
 
     #[test]
